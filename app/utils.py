@@ -3,10 +3,10 @@
 General utility functions.
 """
 
-import random
-import string
+import os
+from datetime import datetime
 
 def generate_meeting_room_name() -> str:
-    """Generates a name for a meeting room."""
-    random_suffix = ''.join(random.choices(string.digits, k=6))
-    return f"MeetingRoom-{random_suffix}"
+    """Generates a name for a meeting room based on the current time."""
+    current_time = datetime.now().strftime("%H%M%S")
+    return f"{os.getenv("DISCORD_MEETING_ROOM_NAME")}-{current_time}"

@@ -2,7 +2,7 @@
 """
 A single Bot instance that handles meeting operations.
 """
-
+import os
 import time
 import logging
 import asyncio
@@ -47,7 +47,7 @@ class MeetingBot(commands.Bot):
             return
 
         if after.channel and (not before.channel or before.channel.id != after.channel.id):
-            if "MeetRoom" in after.channel.name:
+            if os.getenv("DISCORD_MEETING_ROOM_NAME") == after.channel.name:
                 # Only the first Bot in manager creates a new meeting room
                 if self != self.manager.bots[0]:
                     return
@@ -68,21 +68,24 @@ class MeetingBot(commands.Bot):
                     )
                     await member.move_to(meeting_channel)
 
-                    # Find forum channel named "meeting-notes"
                     forum_channel = None
+                    forum_channel_name = os.getenv("DISCORD_MEETING_NOTE_FORUM_NAME")
                     for ch in category.channels:
-                        if isinstance(ch, ForumChannel) and ch.name == "meeting-notes":
+                        if isinstance(ch, ForumChannel) and ch.name == forum_channel_name:
                             forum_channel = ch
                             break
 
                     now_str = time.strftime("%Y-%m-%d %H:%M:%S")
                     thread = None
                     if forum_channel:
-                        content = (
-                            f"**Initiator**: {member.mention}\n"
-                            f"**Start Time**: {now_str}\n"
-                            f"**Channel**: {meeting_channel.mention}\n\n"
-                            f"Participant {member.mention} joined the meeting."
+                        content_template = os.getenv(
+                            "MEETING_FORUM_CONTENT",
+                            "**Initiator**: {initiator}\n**Start Time**: {time}\n**Channel**: {channel}\n\nParticipant {initiator} joined the meeting."
+                        )
+                        content = content_template.format(
+                            initiator=member.mention,
+                            time=now_str,
+                            channel=meeting_channel.mention
                         )
                         post = await self.manager.create_forum_post_override(
                             forum_channel=forum_channel,
@@ -124,7 +127,11 @@ class MeetingBot(commands.Bot):
                     thread = self.meeting_forum_thread_info.get(thread_id)
                     if thread:
                         try:
-                            await thread.send(f"{member.mention} joined the meeting.")
+                            join_message_template = os.getenv(
+                                "MEETING_JOIN_MESSAGE",
+                                "{member} joined the meeting."
+                            )
+                            await thread.send(join_message_template.format(member=member.mention))
                         except Exception as exc:
                             logger.error("Cannot update forum thread (join): %s", exc)
 
@@ -138,7 +145,11 @@ class MeetingBot(commands.Bot):
                 thread = self.meeting_forum_thread_info.get(thread_id)
                 if thread:
                     try:
-                        await thread.send(f"{member.mention} left the meeting.")
+                        leave_message_template = os.getenv(
+                            "MEETING_LEAVE_MESSAGE",
+                            "{member} left the meeting."
+                        )
+                        await thread.send(leave_message_template.format(member=member.mention))
                     except Exception as exc:
                         logger.error("Cannot update forum thread (leave): %s", exc)
 
@@ -182,13 +193,21 @@ class MeetingBot(commands.Bot):
                 logger.info("Recording task stopped.")
 
             if thread:
-                msg = (
-                    f"### Meeting Ended\n"
-                    f"**Duration**: {duration_str}\n"
-                    f"**Participants**: {' '.join([f'<@{pid}>' for pid in all_participants])}\n"
+                ended_message_template = os.getenv(
+                    "MEETING_ENDED_MESSAGE",
+                    "### Meeting Ended\n**Duration**: {duration}\n**Participants**: {participants}\n"
+                )
+                msg = ended_message_template.format(
+                    duration=duration_str,
+                    participants=' '.join([f'<@{pid}>' for pid in all_participants])
                 )
                 await thread.send(msg)
-                processing_msg = await thread.send("Generating meeting summary...")
+
+                generating_summary_message = os.getenv(
+                    "GENERATING_SUMMARY_MESSAGE",
+                    "Generating meeting summary..."
+                )
+                processing_msg = await thread.send(generating_summary_message)
                 info["summary_message_id"] = processing_msg.id
 
             try:
@@ -196,8 +215,8 @@ class MeetingBot(commands.Bot):
             except Exception as error:
                 logger.error("Failed to delete voice channel: %s", error)
 
-            # TODO: Simulated final summary
-            summary_text = "[AI Summary Result]\n(Example...)"
+            # TODO: Generate summary
+            summary_text = "TODO: Generate summary here"
 
             if thread:
                 summary_msg_id = info.get("summary_message_id")

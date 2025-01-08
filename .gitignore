@@ -6,3 +6,7 @@
 *.pyc
 
 .env
+
+*.mp3
+
+*.wav

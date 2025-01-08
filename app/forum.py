@@ -2,7 +2,8 @@
 """
 Forum-related utility functions.
 """
-
+import io
+import os
 import logging
 import discord
 from discord import ForumChannel
@@ -25,13 +26,16 @@ async def create_forum_post(
 async def post_final_summary(thread: discord.Thread, summary_text: str) -> None:
     """Posts final summary text in a thread with a text file."""
     try:
-        file_name = "meeting_summary.txt"
-        with open(file_name, "w", encoding="utf-8") as file:
-            file.write(summary_text)
+        summary_message_template = os.getenv(
+            "FINAL_SUMMARY_MESSAGE",
+            "Here is the final meeting summary:"
+        )
+
+        file_stream = io.StringIO(summary_text)
 
         await thread.send(
-            content="Here is the final meeting summary:",
-            file=discord.File(file_name, filename=file_name)
+            content=summary_message_template,
+            file=discord.File(fp=file_stream, filename="meeting_summary.txt")
         )
         logger.info("Uploaded the final summary in the thread.")
     except Exception as error:

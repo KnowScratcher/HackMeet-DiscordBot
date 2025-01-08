@@ -45,8 +45,6 @@ async def record_meeting_audio(bot, voice_channel_id: int):
         if not info:
             return
 
-        meeting_start_ts = info["start_time"]
-
         output_folder = f"recordings_{channel_id}"
         os.makedirs(output_folder, exist_ok=True)
 
@@ -70,21 +68,21 @@ async def record_meeting_audio(bot, voice_channel_id: int):
 
             stt_results[user_id] = stt_text
 
-        thread_id = info.get("forum_thread_id")
-        thread = bot.meeting_forum_thread_info.get(thread_id) if thread_id else None
-
-        if thread:
-            for uid, transcript in stt_results.items():
-                # TODO: Add padding or remove this logic
-                padded_path = os.path.join(output_folder, f"{uid}_padded.mp3")
-
-                if not os.path.exists(padded_path):
-                    padded_path = os.path.join(output_folder, f"{uid}.mp3")
-
-                await thread.send(
-                    content=f"User <@{uid}> audio file:\nSTT result: {transcript}",
-                    file=discord.File(padded_path, filename=f"{uid}.mp3")
-                )
+        # thread_id = info.get("forum_thread_id")
+        # thread = bot.meeting_forum_thread_info.get(thread_id) if thread_id else None
+        #
+        # if thread:
+        #     for uid, transcript in stt_results.items():
+        #         # TODO: Add padding or remove this logic
+        #         padded_path = os.path.join(output_folder, f"{uid}_padded.mp3")
+        #
+        #         if not os.path.exists(padded_path):
+        #             padded_path = os.path.join(output_folder, f"{uid}.mp3")
+        #
+        #         await thread.send(
+        #             content=f"User <@{uid}> audio file:\nSTT result: {transcript}",
+        #             file=discord.File(padded_path, filename=f"{uid}.mp3")
+        #         )
 
     voice_client.start_recording(
         sink,
