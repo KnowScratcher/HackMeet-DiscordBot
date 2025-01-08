@@ -13,7 +13,7 @@ from typing import Dict
 from discord.ext import commands
 from discord import VoiceState, Intents, Member, ForumChannel
 
-from app.forum import post_final_summary
+from app.forum import post_with_file
 from app.utils import generate_meeting_room_name
 
 logger = logging.getLogger(__name__)
@@ -215,8 +215,8 @@ class MeetingBot(commands.Bot):
             except Exception as error:
                 logger.error("Failed to delete voice channel: %s", error)
 
-            # TODO: Generate summary
-            summary_text = "TODO: Generate summary here"
+            meeting_transcript = info.get("meeting_transcript", "No transcript available")
+            summary_text = info.get("summary_text", "No summary available")
 
             if thread:
                 summary_msg_id = info.get("summary_message_id")
@@ -227,7 +227,8 @@ class MeetingBot(commands.Bot):
                     except Exception as exc:
                         logger.warning("Failed to delete 'processing' message: %s", exc)
 
-                await post_final_summary(thread, summary_text)
+                await post_with_file(thread, meeting_transcript, message_template=os.getenv("TRANSCRIBING_MESSAGE"))
+                await post_with_file(thread, summary_text, message_template=os.getenv("FINAL_SUMMARY_MESSAGE"))
 
             if channel_id in self.meeting_voice_channel_info:
                 del self.meeting_voice_channel_info[channel_id]

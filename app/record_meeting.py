@@ -6,6 +6,8 @@ Recording logic using Py-cord's Sinks for each user track.
 import os
 import asyncio
 import logging
+from datetime import datetime
+
 import discord
 from pydub import AudioSegment
 from discord.sinks import MP3Sink
@@ -45,6 +47,7 @@ async def record_meeting_audio(bot, voice_channel_id: int):
         if not info:
             return
 
+        guild = bot.guilds[0] if bot.guilds else None  # for get username
         output_folder = f"recordings_{channel_id}"
         os.makedirs(output_folder, exist_ok=True)
 
@@ -59,16 +62,45 @@ async def record_meeting_audio(bot, voice_channel_id: int):
             stt_func = select_stt_function()
             stt_text = stt_func(out_path)
 
-            for segment in stt_text:
-                offset = segment["offset"]
-                duration = segment["duration"]
-                text = segment["text"]
-                logger.info(
-                    "Offset: %s sec, Duration: %s sec, Text: %s",
-                    offset, duration, text
-                )
-
             stt_results[user_id] = stt_text
+
+        # Integrate all paragraphs and sort them by time
+        timeline_segments = []
+        for user_id, segments in stt_results.items():
+            for segment in segments:
+                # Calculate the absolute time
+                absolute_time = datetime.fromtimestamp(info["start_time"] + segment["offset"]).strftime("%Y-%m-%d %H:%M:%S")
+                timeline_segments.append((absolute_time, user_id, segment["text"]))
+
+        timeline_segments = []
+        for user_id, segments in stt_results.items():
+            # get username from user_id
+            if not guild:
+                user_name = user_id
+            else:
+                member = guild.get_member(user_id)
+                if member:
+                    user_name = member.display_name
+                else:
+                    user = bot.get_user(user_id)
+                    user_name = user.name if user else user_id
+
+            for segment in segments:
+                absolute_time = datetime.fromtimestamp(info["start_time"] + segment["offset"]).strftime("%Y-%m-%d %H:%M:%S")
+                timeline_segments.append((absolute_time, user_name, segment["text"]))
+
+
+        # Sort the timeline segments by time
+        timeline_segments.sort(key=lambda x: x[0])
+
+        # Combination all segments into a single summary text
+        lines = []
+        for t, uid, text in timeline_segments:
+            lines.append(f"[{t}] <@{uid}>: {text}")
+        meeting_transcript = "\n".join(lines)
+
+        info["meeting_transcript"] = meeting_transcript
+        print(meeting_transcript)
 
         # thread_id = info.get("forum_thread_id")
         # thread = bot.meeting_forum_thread_info.get(thread_id) if thread_id else None

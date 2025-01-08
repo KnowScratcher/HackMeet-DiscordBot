@@ -23,18 +23,27 @@ async def create_forum_post(
         logger.error("Failed to create forum post: %s", error)
         return None
 
-async def post_final_summary(thread: discord.Thread, summary_text: str) -> None:
-    """Posts final summary text in a thread with a text file."""
-    try:
-        summary_message_template = os.getenv(
-            "FINAL_SUMMARY_MESSAGE",
-            "Here is the final meeting summary:"
-        )
 
-        file_stream = io.StringIO(summary_text)
+# app/forum.py（更新後的部分）
+async def post_with_file(
+        thread: discord.Thread,
+        text: str,
+        message_template: str = None
+) -> None:
+    """
+    Posts final summary text in a thread with a text file.
+    """
+    try:
+        if message_template is None:
+            summary_message_template = os.getenv(
+                "FINAL_SUMMARY_MESSAGE",
+                "Here is the final meeting summary:"
+            )
+
+        file_stream = io.StringIO(text)
 
         await thread.send(
-            content=summary_message_template,
+            content=message_template,
             file=discord.File(fp=file_stream, filename="meeting_summary.txt")
         )
         logger.info("Uploaded the final summary in the thread.")
