@@ -6,15 +6,15 @@ import os
 import time
 import logging
 import asyncio
+import discord
+
 from datetime import timedelta
 from typing import Dict
-
-import discord
 from discord.ext import commands
 from discord import VoiceState, Intents, Member, ForumChannel
 
-from .forum import post_final_summary
-from .utils import generate_meeting_room_name
+from app.forum import post_final_summary
+from app.utils import generate_meeting_room_name
 
 logger = logging.getLogger(__name__)
 

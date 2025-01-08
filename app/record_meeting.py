@@ -8,9 +8,9 @@ import asyncio
 import logging
 import discord
 from pydub import AudioSegment
-
 from discord.sinks import MP3Sink
-from .azure_stt import azure_stt_with_timeline
+
+from app.stt_service.stt_select import select_stt_function
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,9 @@ async def record_meeting_audio(bot, voice_channel_id: int):
             user_segment.export(out_path, format="mp3")
             logger.info("Exported user %s audio to %s", user_id, out_path)
 
-            stt_text = azure_stt_with_timeline(out_path)
+            stt_func = select_stt_function()
+            stt_text = stt_func(out_path)
+
             for segment in stt_text:
                 offset = segment["offset"]
                 duration = segment["duration"]

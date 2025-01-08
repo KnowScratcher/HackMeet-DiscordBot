@@ -7,7 +7,7 @@ import os
 import logging
 from dotenv import load_dotenv
 
-from .multi_bot_manager import MultiBotManager
+from app.multi_bot_manager import MultiBotManager
 
 logger = logging.getLogger(__name__)
 

@@ -5,11 +5,11 @@ Manages multiple Bots and schedules them to record new meetings.
 
 import asyncio
 import logging
-
 from typing import List
-from .meeting_bot import MeetingBot
-from .record_meeting import record_meeting_audio
-from .forum import create_forum_post
+
+from app.meeting_bot import MeetingBot
+from app.record_meeting import record_meeting_audio
+from app.forum import create_forum_post
 
 logger = logging.getLogger(__name__)
 
