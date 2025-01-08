@@ -216,7 +216,8 @@ class MeetingBot(commands.Bot):
                 logger.error("Failed to delete voice channel: %s", error)
 
             meeting_transcript = info.get("meeting_transcript", "No transcript available")
-            summary_text = info.get("summary_text", "No summary available")
+            meeting_summary = info.get("meeting_summary", "No summary available")
+            meeting_todolist = info.get("meeting_todolist", "No to-do list available")
 
             if thread:
                 summary_msg_id = info.get("summary_message_id")
@@ -228,7 +229,8 @@ class MeetingBot(commands.Bot):
                         logger.warning("Failed to delete 'processing' message: %s", exc)
 
                 await post_with_file(thread, meeting_transcript, message_template=os.getenv("TRANSCRIBING_MESSAGE"))
-                await post_with_file(thread, summary_text, message_template=os.getenv("FINAL_SUMMARY_MESSAGE"))
+                await post_with_file(thread, meeting_summary, message_template=os.getenv("SUMMARY_MESSAGE"))
+                await post_with_file(thread, meeting_todolist, message_template=os.getenv("TODOLIST_MESSAGE"))
 
             if channel_id in self.meeting_voice_channel_info:
                 del self.meeting_voice_channel_info[channel_id]

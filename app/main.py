@@ -8,12 +8,15 @@ import logging
 from dotenv import load_dotenv
 
 from app.multi_bot_manager import MultiBotManager
+from app.summary.ai_select import ai_select_init
 
 logger = logging.getLogger(__name__)
 
 def main():
     """Reads bot tokens and runs the MultiBotManager."""
     load_dotenv()
+
+    ai_select_init()
 
     bot_tokens_str = os.getenv("BOT_TOKENS", "")
     if not bot_tokens_str:

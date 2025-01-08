@@ -13,6 +13,8 @@ from pydub import AudioSegment
 from discord.sinks import MP3Sink
 
 from app.stt_service.stt_select import select_stt_function
+from app.summary.agents.summary import generate_summary
+from app.summary.agents.todolist import generate_todolist
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +102,12 @@ async def record_meeting_audio(bot, voice_channel_id: int):
         meeting_transcript = "\n".join(lines)
 
         info["meeting_transcript"] = meeting_transcript
-        print(meeting_transcript)
+        info["meeting_summary"] = await generate_summary(meeting_transcript)
+        info["meeting_todolist"] = await generate_todolist(meeting_transcript)
+
+        print(info["meeting_transcript"])
+        print(info["meeting_summary"])
+        print(info["meeting_todolist"])
 
         # thread_id = info.get("forum_thread_id")
         # thread = bot.meeting_forum_thread_info.get(thread_id) if thread_id else None

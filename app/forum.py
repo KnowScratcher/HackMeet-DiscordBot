@@ -35,8 +35,8 @@ async def post_with_file(
     """
     try:
         if message_template is None:
-            summary_message_template = os.getenv(
-                "FINAL_SUMMARY_MESSAGE",
+            message_template = os.getenv(
+                "SUMMARY_MESSAGE",
                 "Here is the final meeting summary:"
             )
 
@@ -44,7 +44,7 @@ async def post_with_file(
 
         await thread.send(
             content=message_template,
-            file=discord.File(fp=file_stream, filename="meeting_summary.txt")
+            file=discord.File(fp=file_stream, filename="meeting.txt")
         )
         logger.info("Uploaded the final summary in the thread.")
     except Exception as error:
