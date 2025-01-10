@@ -25,18 +25,19 @@ class MultiBotManager:
             bot = MeetingBot(bot_token=token, manager=self)
             self.bots.append(bot)
 
-        # Override to help pass forum creation calls to the first bot
-        # or have a fallback approach
-        for bot in self.bots:
-            async def create_forum_post_override(
-                forum_channel,
-                title: str,
-                content: str
-            ):
-                """Helper method to ensure we have a unified create_forum_post."""
-                return await create_forum_post(forum_channel=forum_channel, title=title, content=content)
+        # Define a helper to override forum creation
+        async def create_forum_post_override(forum_channel, title: str, content: str):
+            """Helper method to ensure we have a unified create_forum_post."""
+            return await create_forum_post(forum_channel=forum_channel, title=title, content=content)
 
+        for bot in self.bots:
             bot.manager.create_forum_post_override = create_forum_post_override
+
+    def finish_meeting(self, voice_channel_id: int):
+        """Remove a finished meeting from the in-progress list."""
+        if voice_channel_id in self.meetings_in_progress:
+            self.meetings_in_progress.remove(voice_channel_id)
+            logger.info("Meeting %d removed from in-progress list.", voice_channel_id)
 
     async def handle_new_meeting(self, voice_channel_id: int) -> None:
         """Called when a new meeting is created."""
@@ -48,6 +49,7 @@ class MultiBotManager:
         logger.info("Scheduling bots for meetings...")
         used_bot_ids = set()
 
+        # Determine which bots are already busy recording
         for bot in self.bots:
             for vc_id, vc_info in bot.meeting_voice_channel_info.items():
                 if vc_id in self.meetings_in_progress:
@@ -66,6 +68,7 @@ class MultiBotManager:
                     already_has_bot = True
                     break
 
+            # Assign a free bot if not assigned
             if not already_has_bot and free_bots:
                 logger.info("Meeting %s needs a bot to record.", vc_id)
                 bot = free_bots.pop(0)

@@ -30,6 +30,7 @@ async def record_meeting_audio(bot, voice_channel_id: int):
         logger.error("Voice channel %s not found or invalid type.", voice_channel_id)
         return
 
+    # Disconnect if already connected
     for vc in bot.voice_clients:
         if vc.guild == guild:
             await vc.disconnect(force=True)
@@ -49,7 +50,7 @@ async def record_meeting_audio(bot, voice_channel_id: int):
         if not info:
             return
 
-        guild = bot.guilds[0] if bot.guilds else None  # for get username
+        guild_local = bot.guilds[0] if bot.guilds else None
         output_folder = f"recordings_{channel_id}"
         os.makedirs(output_folder, exist_ok=True)
 
@@ -63,68 +64,47 @@ async def record_meeting_audio(bot, voice_channel_id: int):
 
             stt_func = select_stt_function()
             stt_text = stt_func(out_path)
-
             stt_results[user_id] = stt_text
 
-        # Integrate all paragraphs and sort them by time
+        # Combine segments for a timeline
         timeline_segments = []
         for user_id, segments in stt_results.items():
-            for segment in segments:
-                # Calculate the absolute time
-                absolute_time = datetime.fromtimestamp(info["start_time"] + segment["offset"]).strftime("%Y-%m-%d %H:%M:%S")
-                timeline_segments.append((absolute_time, user_id, segment["text"]))
-
-        timeline_segments = []
-        for user_id, segments in stt_results.items():
-            # get username from user_id
-            if not guild:
-                user_name = user_id
-            else:
-                member = guild.get_member(user_id)
+            # Get user display name
+            if guild_local:
+                member = guild_local.get_member(user_id)
                 if member:
                     user_name = member.display_name
                 else:
-                    user = bot.get_user(user_id)
-                    user_name = user.name if user else user_id
+                    user_obj = bot.get_user(user_id)
+                    user_name = user_obj.name if user_obj else user_id
+            else:
+                user_name = str(user_id)
 
             for segment in segments:
                 absolute_time = datetime.fromtimestamp(info["start_time"] + segment["offset"]).strftime("%Y-%m-%d %H:%M:%S")
                 timeline_segments.append((absolute_time, user_name, segment["text"]))
 
-
-        # Sort the timeline segments by time
+        # Sort segments by time
         timeline_segments.sort(key=lambda x: x[0])
 
-        # Combination all segments into a single summary text
+        # Build the transcript
         lines = []
         for t, uid, text in timeline_segments:
+            # Show mention style with <@uid> or just user_name
             lines.append(f"[{t}] <@{uid}>: {text}")
         meeting_transcript = "\n".join(lines)
 
+        # Put into dict so forum thread can fetch
         info["meeting_transcript"] = meeting_transcript
         info["meeting_summary"] = await generate_summary(meeting_transcript)
         info["meeting_todolist"] = await generate_todolist(meeting_transcript)
 
+        # Debug logs
         print(info["meeting_transcript"])
         print(info["meeting_summary"])
         print(info["meeting_todolist"])
 
-        # thread_id = info.get("forum_thread_id")
-        # thread = bot.meeting_forum_thread_info.get(thread_id) if thread_id else None
-        #
-        # if thread:
-        #     for uid, transcript in stt_results.items():
-        #         # TODO: Add padding or remove this logic
-        #         padded_path = os.path.join(output_folder, f"{uid}_padded.mp3")
-        #
-        #         if not os.path.exists(padded_path):
-        #             padded_path = os.path.join(output_folder, f"{uid}.mp3")
-        #
-        #         await thread.send(
-        #             content=f"User <@{uid}> audio file:\nSTT result: {transcript}",
-        #             file=discord.File(padded_path, filename=f"{uid}.mp3")
-        #         )
-
+    # Start recording
     voice_client.start_recording(
         sink,
         finished_callback,
@@ -135,6 +115,7 @@ async def record_meeting_audio(bot, voice_channel_id: int):
     if voice_channel_id in bot.meeting_voice_channel_info:
         bot.meeting_voice_channel_info[voice_channel_id]["recording_task"] = asyncio.current_task()
 
+    # Keep the recording task alive
     try:
         while True:
             await asyncio.sleep(1)

@@ -43,12 +43,15 @@ class MeetingBot(commands.Bot):
         before: VoiceState,
         after: VoiceState
     ):
+        # Ignore if it's a bot
         if member.bot:
             return
 
+        # A user joins a voice channel
         if after.channel and (not before.channel or before.channel.id != after.channel.id):
+            # Check if the user joined the "trigger channel"
             if os.getenv("DISCORD_MEETING_ROOM_NAME") == after.channel.name:
-                # Only the first Bot in manager creates a new meeting room
+                # Only the first Bot in the manager creates a new meeting
                 if self != self.manager.bots[0]:
                     return
 
@@ -115,6 +118,7 @@ class MeetingBot(commands.Bot):
                     logger.error("Failed to create new meeting room: %s", error)
                     return
 
+            # If the user joins an existing meeting channel
             elif after.channel.id in self.meeting_voice_channel_info:
                 info = self.meeting_voice_channel_info[after.channel.id]
                 info["active_participants"].add(member.id)
@@ -135,6 +139,7 @@ class MeetingBot(commands.Bot):
                         except Exception as exc:
                             logger.error("Cannot update forum thread (join): %s", exc)
 
+        # A user leaves a voice channel
         if before.channel and before.channel.id in self.meeting_voice_channel_info:
             info = self.meeting_voice_channel_info[before.channel.id]
             if member.id in info["active_participants"]:
@@ -154,6 +159,7 @@ class MeetingBot(commands.Bot):
                         logger.error("Cannot update forum thread (leave): %s", exc)
 
             voice_channel = before.channel
+            # Close the channel if no human participants left
             if not any(m for m in voice_channel.members if not m.bot):
                 logger.info(
                     "Channel %s has no human participants. Will close in 5 seconds.",
@@ -172,6 +178,7 @@ class MeetingBot(commands.Bot):
         if not voice_channel:
             return
 
+        # If still no human participants, close the meeting
         if not any(m for m in voice_channel.members if not m.bot):
             info = self.meeting_voice_channel_info.get(channel_id)
             if not info:
@@ -191,6 +198,7 @@ class MeetingBot(commands.Bot):
                 recording_task.cancel()
                 logger.info("Recording task stopped.")
 
+            # Send ended message
             if thread:
                 ended_message_template = os.getenv(
                     "MEETING_ENDED_MESSAGE",
@@ -209,12 +217,13 @@ class MeetingBot(commands.Bot):
                 processing_msg = await thread.send(generating_summary_message)
                 info["summary_message_id"] = processing_msg.id
 
+            # Delete voice channel
             try:
                 await voice_channel.delete(reason="Meeting ended.")
             except Exception as error:
                 logger.error("Failed to delete voice channel: %s", error)
 
-            # wait for the summary to be generated
+            # Wait for the summary to be generated
             async def wait_for_non_default_value(
                 data_dict: dict,
                 key: str,
@@ -237,9 +246,9 @@ class MeetingBot(commands.Bot):
                 if value == default_str:
                     await thread_obj.send("Timeout for generating.")
                 else:
-                    # When the value is ready, post it to the thread
                     await post_with_file(thread_obj, value, message_template=msg_template)
 
+            # Upload transcripts, summary, and to-do list
             if thread:
                 await handle_upload(
                     thread,
@@ -265,6 +274,10 @@ class MeetingBot(commands.Bot):
                 del self.meeting_voice_channel_info[channel_id]
             if thread_id in self.meeting_forum_thread_info:
                 del self.meeting_forum_thread_info[thread_id]
+
+            # Mark the meeting as finished in the manager
+            self.manager.finish_meeting(channel_id)
+
         else:
             logger.info(
                 "Channel %s had new participants within %d seconds. Cancel closing.",
