@@ -18,8 +18,9 @@ from app.summary.agents.todolist import generate_todolist
 
 logger = logging.getLogger(__name__)
 
+
 async def record_meeting_audio(bot, voice_channel_id: int):
-    """Handles the recording of a voice channel using MP3Sink."""
+    """Handles the recording of a voice channel using MP3Sink in an async manner."""
     guild = bot.guilds[0] if bot.guilds else None
     if not guild:
         logger.error("Guild not found for recording.")
@@ -57,14 +58,18 @@ async def record_meeting_audio(bot, voice_channel_id: int):
         stt_results = {}
         for user_id, recorded_audio in sink.audio_data.items():
             logger.info("User %s recorded file: %s", user_id, recorded_audio.file)
+
+            # Convert each user's audio to MP3 (already MP3Sink, but just ensuring)
             user_segment = AudioSegment.from_file(recorded_audio.file, format="mp3")
             out_path = os.path.join(output_folder, f"{user_id}.mp3")
             user_segment.export(out_path, format="mp3")
             logger.info("Exported user %s audio to %s", user_id, out_path)
 
+            # STT
             stt_func = select_stt_function()
-            stt_text = stt_func(out_path)
+            stt_text = await stt_func(out_path)
             stt_results[user_id] = stt_text
+            print(f"User {user_id} STT: {stt_text}")
 
         # Combine segments for a timeline
         timeline_segments = []
@@ -76,12 +81,17 @@ async def record_meeting_audio(bot, voice_channel_id: int):
                     user_name = member.display_name
                 else:
                     user_obj = bot.get_user(user_id)
-                    user_name = user_obj.name if user_obj else user_id
+                    user_name = user_obj.name if user_obj else str(user_id)
             else:
                 user_name = str(user_id)
 
             for segment in segments:
-                absolute_time = datetime.fromtimestamp(info["start_time"] + segment["offset"]).strftime("%Y-%m-%d %H:%M:%S")
+                # Skip empty segments
+                if not segment["text"].strip():
+                    continue
+                absolute_time = datetime.fromtimestamp(
+                    info["start_time"] + segment["offset"]
+                ).strftime("%Y-%m-%d %H:%M:%S")
                 timeline_segments.append((absolute_time, user_name, segment["text"]))
 
         # Sort segments by time
@@ -90,7 +100,9 @@ async def record_meeting_audio(bot, voice_channel_id: int):
         # Build the transcript
         lines = []
         for t, uid, text in timeline_segments:
-            # Show mention style with <@uid> or just user_name
+            # Skip empty lines
+            if not text.strip():
+                continue
             lines.append(f"[{t}] <@{uid}>: {text}")
         meeting_transcript = "\n".join(lines)
 
@@ -100,22 +112,17 @@ async def record_meeting_audio(bot, voice_channel_id: int):
         info["meeting_todolist"] = await generate_todolist(meeting_transcript)
 
         # Debug logs
-        print(info["meeting_transcript"])
-        print(info["meeting_summary"])
-        print(info["meeting_todolist"])
+        logger.info("Meeting transcript: %s", info["meeting_transcript"])
+        logger.info("Meeting summary: %s", info["meeting_summary"])
+        logger.info("Meeting to-do list: %s", info["meeting_todolist"])
 
     # Start recording
-    voice_client.start_recording(
-        sink,
-        finished_callback,
-        voice_channel_id,
-        sync_start=True
-    )
+    voice_client.start_recording(sink, finished_callback, voice_channel_id, sync_start=True)
 
     if voice_channel_id in bot.meeting_voice_channel_info:
         bot.meeting_voice_channel_info[voice_channel_id]["recording_task"] = asyncio.current_task()
 
-    # Keep the recording task alive
+    # Keep the recording task alive without blocking other tasks
     try:
         while True:
             await asyncio.sleep(1)

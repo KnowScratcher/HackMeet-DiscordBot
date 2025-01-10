@@ -1,10 +1,10 @@
 # app/azure_stt.py
 """
-Azure STT utility functions.
+Azure STT utility functions with async approach.
 """
 
 import os
-import time
+import asyncio
 import logging
 from typing import List, Dict
 
@@ -13,19 +13,26 @@ import azure.cognitiveservices.speech as speechsdk
 
 logger = logging.getLogger(__name__)
 
-def azure_stt_with_timeline(audio_file_path: str) -> List[Dict]:
-    """Converts an MP3 file to text using Azure Speech Service."""
+
+def _convert_to_wav(source_path: str, wav_path: str) -> None:
+    """Synchronous helper to convert MP3 to WAV."""
+    sound = AudioSegment.from_file(source_path, format="mp3")
+    sound.export(wav_path, format="wav")
+
+
+async def azure_stt_with_timeline(audio_file_path: str) -> List[Dict]:
+    """Asynchronously converts an MP3 file to text using Azure Speech Service."""
     speech_key = os.getenv("AZURE_SPEECH_KEY")
     service_region = os.getenv("AZURE_SPEECH_REGION")
     if not speech_key or not service_region:
         logger.error("Missing Azure credentials.")
         return []
 
-    # Convert MP3 to WAV
-    wav_path = audio_file_path + ".wav"
+    wav_path = f"{audio_file_path}.wav"
+
+    # Convert MP3 to WAV in a separate thread to avoid blocking
     try:
-        sound = AudioSegment.from_file(audio_file_path, format="mp3")
-        sound.export(wav_path, format="wav")
+        await asyncio.to_thread(_convert_to_wav, audio_file_path, wav_path)
     except Exception as error:
         logger.error("Failed to convert MP3 to WAV: %s", error)
         return []
@@ -34,13 +41,15 @@ def azure_stt_with_timeline(audio_file_path: str) -> List[Dict]:
     speech_config.speech_recognition_language = os.getenv("AZURE_SPEECH_LANGUAGE", "en-US")
     audio_input = speechsdk.AudioConfig(filename=wav_path)
     recognizer = speechsdk.SpeechRecognizer(
-        speech_config=speech_config, audio_config=audio_input
+        speech_config=speech_config,
+        audio_config=audio_input
     )
 
     results = []
+    done = False
 
     def recognized_handler(evt: speechsdk.SpeechRecognitionEventArgs):
-        """Handle recognized speech event."""
+        """Handles recognized speech event."""
         if evt.result.reason == speechsdk.ResultReason.RecognizedSpeech:
             start_sec = evt.result.offset / 10_000_000
             dur_sec = evt.result.duration / 10_000_000
@@ -50,10 +59,7 @@ def azure_stt_with_timeline(audio_file_path: str) -> List[Dict]:
                 "text": evt.result.text
             })
 
-    done = False
-
     def stop_cb(_evt):
-        """Stop callback when speech session ends."""
         nonlocal done
         done = True
 
@@ -63,13 +69,13 @@ def azure_stt_with_timeline(audio_file_path: str) -> List[Dict]:
 
     recognizer.start_continuous_recognition()
     while not done:
-        time.sleep(0.5)
+        await asyncio.sleep(0.5)
     recognizer.stop_continuous_recognition()
 
     # Clean up the temp WAV
     try:
         if os.path.exists(wav_path):
-            os.remove(wav_path)
+            await asyncio.to_thread(os.remove, wav_path)
     except Exception as ex:
         logger.error("Failed to remove temp WAV: %s", ex)
 
