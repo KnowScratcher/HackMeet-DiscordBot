@@ -156,8 +156,7 @@ class MeetingBot(commands.Bot):
             voice_channel = before.channel
             if not any(m for m in voice_channel.members if not m.bot):
                 logger.info(
-                    "Channel %s has no human participants. "
-                    "Will close in 5 seconds.",
+                    "Channel %s has no human participants. Will close in 5 seconds.",
                     voice_channel.name
                 )
                 await self.close_meeting_after_delay(voice_channel.id, delay_seconds=5)
@@ -215,23 +214,53 @@ class MeetingBot(commands.Bot):
             except Exception as error:
                 logger.error("Failed to delete voice channel: %s", error)
 
-            meeting_transcript = info.get("meeting_transcript", "No transcript available")
-            meeting_summary = info.get("meeting_summary", "No summary available")
-            meeting_todolist = info.get("meeting_todolist", "No to-do list available")
+            # wait for the summary to be generated
+            async def wait_for_non_default_value(
+                data_dict: dict,
+                key: str,
+                default_value: str,
+                max_wait: float = 3600.0,
+                interval: float = 5.0
+            ) -> str:
+                """Wait for a non-default value to appear in the data dictionary."""
+                start_time = time.time()
+                while time.time() - start_time < max_wait:
+                    current_value = data_dict.get(key, default_value)
+                    if current_value != default_value:
+                        return current_value
+                    await asyncio.sleep(interval)
+                return default_value
+
+            async def handle_upload(thread_obj, field_key, default_str, msg_template):
+                """Handle the upload of a field to the forum thread."""
+                value = await wait_for_non_default_value(info, field_key, default_str)
+                if value == default_str:
+                    await thread_obj.send("Timeout for generating.")
+                else:
+                    # When the value is ready, post it to the thread
+                    await post_with_file(thread_obj, value, message_template=msg_template)
 
             if thread:
-                summary_msg_id = info.get("summary_message_id")
-                if summary_msg_id:
-                    try:
-                        msg_to_delete = await thread.fetch_message(summary_msg_id)
-                        await msg_to_delete.delete()
-                    except Exception as exc:
-                        logger.warning("Failed to delete 'processing' message: %s", exc)
+                await handle_upload(
+                    thread,
+                    "meeting_transcript",
+                    "No transcript available",
+                    os.getenv("TRANSCRIBING_MESSAGE")
+                )
+                await handle_upload(
+                    thread,
+                    "meeting_summary",
+                    "No summary available",
+                    os.getenv("SUMMARY_MESSAGE")
+                )
+                await handle_upload(
+                    thread,
+                    "meeting_todolist",
+                    "No to-do list available",
+                    os.getenv("TODOLIST_MESSAGE")
+                )
 
-                await post_with_file(thread, meeting_transcript, message_template=os.getenv("TRANSCRIBING_MESSAGE"))
-                await post_with_file(thread, meeting_summary, message_template=os.getenv("SUMMARY_MESSAGE"))
-                await post_with_file(thread, meeting_todolist, message_template=os.getenv("TODOLIST_MESSAGE"))
-
+            # Clean up the meeting info
             if channel_id in self.meeting_voice_channel_info:
                 del self.meeting_voice_channel_info[channel_id]
             if thread_id in self.meeting_forum_thread_info:

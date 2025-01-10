@@ -21,12 +21,11 @@ Action items from the meeting.
 Participant lists or detailed meeting information.
 
 Format example:
------
+
 Meeting Summary
 Keywords:
 Discussion Topics and Summary:
 Discussion Outcomes:
------
 """
 
 async def generate_summary(transcript: str) -> str:

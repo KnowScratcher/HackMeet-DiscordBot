@@ -22,7 +22,7 @@ Irrelevant or unrelated meeting details.
 General discussions without specific action items.
 
 Format example:
------
+
 Meeting To-Do List
 1. Task Name: [Brief Description]
    - Responsible: [Individual/Team]
@@ -31,7 +31,6 @@ Meeting To-Do List
 2. Task Name: [Brief Description]
    - Responsible: [Individual/Team]
    - Deadline: [Specific Date/Timeline]
------
 """
 
 async def generate_todolist(transcript: str) -> str:
