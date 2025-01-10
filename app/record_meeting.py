@@ -107,9 +107,15 @@ async def record_meeting_audio(bot, voice_channel_id: int):
         meeting_transcript = "\n".join(lines)
 
         # Put into dict so forum thread can fetch
-        local_info["meeting_transcript"] = meeting_transcript
-        local_info["meeting_summary"] = await generate_summary(meeting_transcript)
-        local_info["meeting_todolist"] = await generate_todolist(meeting_transcript)
+        if not meeting_transcript.strip():
+            # TODO: Optimise this
+            local_info["meeting_transcript"] = os.getenv("NO_TRANSCRIPT_MESSAGE", "No transcript available.")
+            local_info["meeting_summary"] = os.getenv("NO_TRANSCRIPT_MESSAGE", "No transcript available.")
+            local_info["meeting_todolist"] = os.getenv("NO_TRANSCRIPT_MESSAGE", "No transcript available.")
+        else:
+            local_info["meeting_transcript"] = meeting_transcript
+            local_info["meeting_summary"] = await generate_summary(meeting_transcript)
+            local_info["meeting_todolist"] = await generate_todolist(meeting_transcript)
 
         # Debug logs
         logger.info("Meeting transcript: %s", local_info["meeting_transcript"])

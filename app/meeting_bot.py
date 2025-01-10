@@ -233,18 +233,21 @@ class MeetingBot(commands.Bot):
 
                 # Retrieve generated data
                 transcript = info.get("meeting_transcript")
-                summary = info.get("meeting_summary")
-                todolist = info.get("meeting_todolist")
+                if transcript == os.getenv("NO_TRANSCRIPT_MESSAGE"):
+                    await thread.send(transcript)
+                else:
+                    summary = info.get("meeting_summary")
+                    todolist = info.get("meeting_todolist")
 
-                # Prepare final text or placeholders
-                final_transcript = transcript if transcript else "(Transcript not available)"
-                final_summary = summary if summary else "(Summary not available)"
-                final_todolist = todolist if todolist else "(To-do list not available)"
+                    # Prepare final text or placeholders
+                    final_transcript = transcript if transcript else "(Transcript not available)"
+                    final_summary = summary if summary else "(Summary not available)"
+                    final_todolist = todolist if todolist else "(To-do list not available)"
 
-                # Use post_with_file to send each attachment with a preceding message
-                await post_with_file(thread, final_transcript, message_template=os.getenv("TRANSCRIBING_MESSAGE"))
-                await post_with_file(thread, final_summary, message_template=os.getenv("SUMMARY_MESSAGE"))
-                await post_with_file(thread, final_todolist, message_template=os.getenv("TODOLIST_MESSAGE"))
+                    # Use post_with_file to send each attachment with a preceding message
+                    await post_with_file(thread, final_transcript, message_template=os.getenv("TRANSCRIBING_MESSAGE"))
+                    await post_with_file(thread, final_summary, message_template=os.getenv("SUMMARY_MESSAGE"))
+                    await post_with_file(thread, final_todolist, message_template=os.getenv("TODOLIST_MESSAGE"))
 
             # Clean up meeting information
             if channel_id in self.meeting_voice_channel_info:
