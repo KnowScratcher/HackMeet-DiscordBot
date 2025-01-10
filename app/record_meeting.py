@@ -55,21 +55,32 @@ async def record_meeting_audio(bot, voice_channel_id: int):
         output_folder = f"recordings_{channel_id}"
         os.makedirs(output_folder, exist_ok=True)
 
+        exported_files = {}
         stt_results = {}
+
+        # export audio files
         for user_id, recorded_audio in sink.audio_data.items():
-            logger.info("User %s recorded file: %s", user_id, recorded_audio.file)
+            try:
+                logger.info("User %s recorded file: %s", user_id, recorded_audio.file)
 
-            # Convert each user's audio to MP3 (already MP3Sink, but just ensuring)
-            user_segment = AudioSegment.from_file(recorded_audio.file, format="mp3")
-            out_path = os.path.join(output_folder, f"{user_id}.mp3")
-            user_segment.export(out_path, format="mp3")
-            logger.info("Exported user %s audio to %s", user_id, out_path)
+                user_segment = AudioSegment.from_file(recorded_audio.file, format="mp3")
+                out_path = os.path.join(output_folder, f"{user_id}.mp3")
+                user_segment.export(out_path, format="mp3")
+                logger.info("Exported user %s audio to %s", user_id, out_path)
 
-            # STT
-            stt_func = select_stt_function()
-            stt_text = await stt_func(out_path)
-            stt_results[user_id] = stt_text
-            print(f"User {user_id} STT: {stt_text}")
+                exported_files[user_id] = out_path
+            except Exception as e:
+                logger.error("Error exporting audio for user %s: %s", user_id, e)
+
+        # STT
+        for user_id, file_path in exported_files.items():
+            try:
+                stt_func = select_stt_function()
+                stt_text = await stt_func(file_path)
+                stt_results[user_id] = stt_text
+                logger.info("User %s STT results: %s", user_id, stt_text)
+            except Exception as e:
+                logger.error("Error processing STT for user %s: %s", user_id, e)
 
         # Combine segments for a timeline
         timeline_segments = []
