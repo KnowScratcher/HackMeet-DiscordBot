@@ -6,6 +6,7 @@ Recording logic using Py-cord's Sinks for each user track.
 import os
 import asyncio
 import logging
+import time
 from datetime import datetime
 
 import discord
@@ -21,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 async def record_meeting_audio(bot, voice_channel_id: int):
     """Handles the recording of a voice channel using MP3Sink in an async manner."""
+    meeting_info = bot.meeting_voice_channel_info.get(voice_channel_id, {})
+
     guild = bot.guilds[0] if bot.guilds else None
     if not guild:
         logger.error("Guild not found for recording.")
@@ -45,11 +48,8 @@ async def record_meeting_audio(bot, voice_channel_id: int):
 
     sink = MP3Sink()
 
-    async def finished_callback(sink: MP3Sink, channel_id: int):
+    async def finished_callback(sink: MP3Sink, channel_id: int, local_info: dict):
         logger.info("Recording callback triggered for channel: %s", channel_id)
-        info = bot.meeting_voice_channel_info.get(channel_id)
-        if not info:
-            return
 
         guild_local = bot.guilds[0] if bot.guilds else None
         output_folder = f"recordings_{channel_id}"
@@ -90,7 +90,7 @@ async def record_meeting_audio(bot, voice_channel_id: int):
                 if not segment["text"].strip():
                     continue
                 absolute_time = datetime.fromtimestamp(
-                    info["start_time"] + segment["offset"]
+                    local_info.get("start_time", time.time()) + segment["offset"]
                 ).strftime("%Y-%m-%d %H:%M:%S")
                 timeline_segments.append((absolute_time, user_name, segment["text"]))
 
@@ -107,17 +107,21 @@ async def record_meeting_audio(bot, voice_channel_id: int):
         meeting_transcript = "\n".join(lines)
 
         # Put into dict so forum thread can fetch
-        info["meeting_transcript"] = meeting_transcript
-        info["meeting_summary"] = await generate_summary(meeting_transcript)
-        info["meeting_todolist"] = await generate_todolist(meeting_transcript)
+        local_info["meeting_transcript"] = meeting_transcript
+        local_info["meeting_summary"] = await generate_summary(meeting_transcript)
+        local_info["meeting_todolist"] = await generate_todolist(meeting_transcript)
 
         # Debug logs
-        logger.info("Meeting transcript: %s", info["meeting_transcript"])
-        logger.info("Meeting summary: %s", info["meeting_summary"])
-        logger.info("Meeting to-do list: %s", info["meeting_todolist"])
+        logger.info("Meeting transcript: %s", local_info["meeting_transcript"])
+        logger.info("Meeting summary: %s", local_info["meeting_summary"])
+        logger.info("Meeting to-do list: %s", local_info["meeting_todolist"])
+
+        # Update the meeting info
+        if channel_id in bot.meeting_voice_channel_info:
+            bot.meeting_voice_channel_info[channel_id].update(local_info)
 
     # Start recording
-    voice_client.start_recording(sink, finished_callback, voice_channel_id, sync_start=True)
+    voice_client.start_recording(sink, finished_callback, voice_channel_id, meeting_info, sync_start=True)
 
     if voice_channel_id in bot.meeting_voice_channel_info:
         bot.meeting_voice_channel_info[voice_channel_id]["recording_task"] = asyncio.current_task()

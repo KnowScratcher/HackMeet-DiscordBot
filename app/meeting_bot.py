@@ -1,6 +1,6 @@
 # app/meeting_bot.py
 """
-A single Bot instance that handles meeting operations.
+A single Bot instance that handles meeting and recording.
 """
 import os
 import time
@@ -17,6 +17,7 @@ from app.forum import post_with_file
 from app.utils import generate_meeting_room_name
 
 logger = logging.getLogger(__name__)
+
 
 class MeetingBot(commands.Bot):
     """A single Bot instance for meeting and recording."""
@@ -50,9 +51,15 @@ class MeetingBot(commands.Bot):
         # A user joins a voice channel
         if after.channel and (not before.channel or before.channel.id != after.channel.id):
             # Check if the user joined the "trigger channel"
-            if os.getenv("DISCORD_MEETING_ROOM_NAME") == after.channel.name:
-                # Only the first Bot in the manager creates a new meeting
-                if self != self.manager.bots[0]:
+            trigger_channel_name = os.getenv("DISCORD_MEETING_ROOM_NAME")
+            if trigger_channel_name == after.channel.name:
+                # Check if the user is in a valid voice channel
+                if any(ch.id == after.channel.id for ch in member.guild.voice_channels):
+                    pass
+
+                assigned_bot = self.manager.assign_bot_for_meeting()
+                if assigned_bot is not self:
+                    # if the bot is not assigned to the user, return
                     return
 
                 category = after.channel.category
@@ -104,9 +111,7 @@ class MeetingBot(commands.Bot):
                         "forum_thread_id": thread.id if thread else None,
                         "summary_message_id": None,
                         "recording_task": None,
-                        "user_join_time": {
-                            member.id: time.time()
-                        },
+                        "user_join_time": {member.id: time.time()},
                     }
                     if thread:
                         self.meeting_forum_thread_info[thread.id] = thread
@@ -198,7 +203,7 @@ class MeetingBot(commands.Bot):
                 recording_task.cancel()
                 logger.info("Recording task stopped.")
 
-            # Send ended message
+            # Send meeting ended message to the forum thread
             if thread:
                 ended_message_template = os.getenv(
                     "MEETING_ENDED_MESSAGE",
@@ -217,70 +222,58 @@ class MeetingBot(commands.Bot):
                 processing_msg = await thread.send(generating_summary_message)
                 info["summary_message_id"] = processing_msg.id
 
-            # Delete voice channel
-            try:
-                await voice_channel.delete(reason="Meeting ended.")
-            except Exception as error:
-                logger.error("Failed to delete voice channel: %s", error)
+                # Delete voice channel
+                try:
+                    await voice_channel.delete(reason="Meeting ended.")
+                except Exception as error:
+                    logger.error("Failed to delete voice channel: %s", error)
 
-            # Wait for the summary to be generated
-            async def wait_for_non_default_value(
-                data_dict: dict,
-                key: str,
-                default_value: str,
-                max_wait: float = 3600.0,
-                interval: float = 5.0
-            ) -> str:
-                """Wait for a non-default value to appear in the data dictionary."""
-                start_time = time.time()
-                while time.time() - start_time < max_wait:
-                    current_value = data_dict.get(key, default_value)
-                    if current_value != default_value:
-                        return current_value
-                    await asyncio.sleep(interval)
-                return default_value
+                # Wait for transcript, summary, and todolist generation
+                await self.wait_for_transcript_and_summary(channel_id, max_wait_seconds=3600)
 
-            async def handle_upload(thread_obj, field_key, default_str, msg_template):
-                """Handle the upload of a field to the forum thread."""
-                value = await wait_for_non_default_value(info, field_key, default_str)
-                if value == default_str:
-                    await thread_obj.send("Timeout for generating.")
-                else:
-                    await post_with_file(thread_obj, value, message_template=msg_template)
+                # Retrieve generated data
+                transcript = info.get("meeting_transcript")
+                summary = info.get("meeting_summary")
+                todolist = info.get("meeting_todolist")
 
-            # Upload transcripts, summary, and to-do list
-            if thread:
-                await handle_upload(
-                    thread,
-                    "meeting_transcript",
-                    "No transcript available",
-                    os.getenv("TRANSCRIBING_MESSAGE")
-                )
-                await handle_upload(
-                    thread,
-                    "meeting_summary",
-                    "No summary available",
-                    os.getenv("SUMMARY_MESSAGE")
-                )
-                await handle_upload(
-                    thread,
-                    "meeting_todolist",
-                    "No to-do list available",
-                    os.getenv("TODOLIST_MESSAGE")
-                )
+                # Prepare final text or placeholders
+                final_transcript = transcript if transcript else "(Transcript not available)"
+                final_summary = summary if summary else "(Summary not available)"
+                final_todolist = todolist if todolist else "(To-do list not available)"
 
-            # Clean up the meeting info
+                # Use post_with_file to send each attachment with a preceding message
+                await post_with_file(thread, final_transcript, message_template=os.getenv("TRANSCRIBING_MESSAGE"))
+                await post_with_file(thread, final_summary, message_template=os.getenv("SUMMARY_MESSAGE"))
+                await post_with_file(thread, final_todolist, message_template=os.getenv("TODOLIST_MESSAGE"))
+
+            # Clean up meeting information
             if channel_id in self.meeting_voice_channel_info:
                 del self.meeting_voice_channel_info[channel_id]
             if thread_id in self.meeting_forum_thread_info:
                 del self.meeting_forum_thread_info[thread_id]
 
-            # Mark the meeting as finished in the manager
             self.manager.finish_meeting(channel_id)
-
+            await self.manager.schedule_bots()
         else:
             logger.info(
                 "Channel %s had new participants within %d seconds. Cancel closing.",
                 voice_channel.name,
                 delay_seconds
             )
+
+    async def wait_for_transcript_and_summary(self, channel_id: int, max_wait_seconds: int = 180):
+        """Wait for transcript, summary, and to-do list to be generated within a reasonable time."""
+        start_ts = time.time()
+        info = self.meeting_voice_channel_info.get(channel_id, {})
+        while time.time() - start_ts < max_wait_seconds:
+            # If all three values are non-empty, generation is complete
+            if (info.get("meeting_transcript") or "") and \
+               (info.get("meeting_summary") or "") and \
+               (info.get("meeting_todolist") or ""):
+                return
+            await asyncio.sleep(5)
+        logger.warning(
+            "Timed out waiting for STT/summary/todolist for channel %d after %d seconds.",
+            channel_id,
+            max_wait_seconds
+        )
