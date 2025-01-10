@@ -124,7 +124,7 @@ class MeetingBot(commands.Bot):
                     return
 
             # If the user joins an existing meeting channel
-            elif after.channel.id in self.meeting_voice_channel_info:
+            elif after.channel and after.channel.id in self.meeting_voice_channel_info:
                 info = self.meeting_voice_channel_info[after.channel.id]
                 info["active_participants"].add(member.id)
                 info["all_participants"].add(member.id)
@@ -145,7 +145,7 @@ class MeetingBot(commands.Bot):
                             logger.error("Cannot update forum thread (join): %s", exc)
 
         # A user leaves a voice channel
-        if before.channel and before.channel.id in self.meeting_voice_channel_info:
+        if before.channel and (not after.channel or before.channel.id != after.channel.id) and before.channel.id in self.meeting_voice_channel_info:
             info = self.meeting_voice_channel_info[before.channel.id]
             if member.id in info["active_participants"]:
                 info["active_participants"].remove(member.id)
