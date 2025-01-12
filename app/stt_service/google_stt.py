@@ -104,8 +104,8 @@ async def google_stt_with_timeline(audio_file_path: str) -> List[Dict]:
     )
 
     try:
-        operation = await asyncio.to_thread(client.batch_recognize, request=request)
-        logger.info("Batch Recognize operation: %s", operation.name)
+        operation = await asyncio.to_thread(client.batch_recognize, request=request, timeout=int(os.getenv("MAX_WAIT_SECONDS", 86400)))
+        logger.info("Batch Recognize operation...")
         response = await asyncio.to_thread(operation.result)
     except Exception as ex:
         logger.error("Batch Recognize failed: %s", ex)
