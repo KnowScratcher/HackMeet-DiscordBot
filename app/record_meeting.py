@@ -59,18 +59,32 @@ async def record_meeting_audio(bot, voice_channel_id: int):
         stt_results = {}
 
         # export audio files
-        for user_id, recorded_audio in sink.audio_data.items():
-            try:
-                logger.info("User %s recorded file: %s", user_id, recorded_audio.file)
+        async def export_audio_async(user_id, recorded_audio):
+            loop = asyncio.get_running_loop()
+            def do_export():
+                try:
+                    logger.info("User %s recorded file: %s", user_id, recorded_audio.file)
+                    user_segment = AudioSegment.from_file(recorded_audio.file, format="mp3")
+                    out_path = os.path.join(output_folder, f"{user_id}.mp3")
+                    user_segment.export(out_path, format="mp3")
+                    logger.info("Exported user %s audio to %s", user_id, out_path)
+                    return out_path
+                except Exception as e:
+                    raise e
+            return await loop.run_in_executor(None, do_export)
 
-                user_segment = AudioSegment.from_file(recorded_audio.file, format="mp3")
-                out_path = os.path.join(output_folder, f"{user_id}.mp3")
-                user_segment.export(out_path, format="mp3")
-                logger.info("Exported user %s audio to %s", user_id, out_path)
+        # Export audio files with async
+        export_tasks = {
+            user_id: export_audio_async(user_id, recorded_audio)
+            for user_id, recorded_audio in sink.audio_data.items()
+        }
+        export_results = await asyncio.gather(*export_tasks.values(), return_exceptions=True)
 
-                exported_files[user_id] = out_path
-            except Exception as e:
-                logger.error("Error exporting audio for user %s: %s", user_id, e)
+        for user_id, result in zip(export_tasks.keys(), export_results):
+            if isinstance(result, Exception):
+                logger.error("Error exporting audio for user %s: %s", user_id, result)
+            else:
+                exported_files[user_id] = result
 
         # STT
         for user_id, file_path in exported_files.items():
