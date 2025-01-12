@@ -7,17 +7,12 @@ import os
 import asyncio
 import logging
 from typing import List, Dict
-
-from pydub import AudioSegment
 import azure.cognitiveservices.speech as speechsdk
+
+from app.utils import _convert_to_wav
 
 logger = logging.getLogger(__name__)
 
-
-def _convert_to_wav(source_path: str, wav_path: str) -> None:
-    """Synchronous helper to convert MP3 to WAV."""
-    sound = AudioSegment.from_file(source_path, format="mp3")
-    sound.export(wav_path, format="wav")
 
 
 async def azure_stt_with_timeline(audio_file_path: str) -> List[Dict]:
@@ -29,16 +24,14 @@ async def azure_stt_with_timeline(audio_file_path: str) -> List[Dict]:
         return []
 
     wav_path = f"{audio_file_path}.wav"
-
-    # Convert MP3 to WAV in a separate thread to avoid blocking
     try:
-        await asyncio.to_thread(_convert_to_wav, audio_file_path, wav_path)
+        await _convert_to_wav(audio_file_path, wav_path)
     except Exception as error:
         logger.error("Failed to convert MP3 to WAV: %s", error)
         return []
 
     speech_config = speechsdk.SpeechConfig(subscription=speech_key, region=service_region)
-    speech_config.speech_recognition_language = os.getenv("AZURE_SPEECH_LANGUAGE", "en-US")
+    speech_config.speech_recognition_language = os.getenv("SPEECH_LANGUAGE", "en-US")
     audio_input = speechsdk.AudioConfig(filename=wav_path)
     recognizer = speechsdk.SpeechRecognizer(
         speech_config=speech_config,

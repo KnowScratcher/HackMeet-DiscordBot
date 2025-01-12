@@ -229,7 +229,7 @@ class MeetingBot(commands.Bot):
                     logger.error("Failed to delete voice channel: %s", error)
 
                 # Wait for transcript, summary, and todolist generation
-                await self.wait_for_transcript_and_summary(channel_id, max_wait_seconds=os.getenv("MAX_WAIT_SECONDS", 10800))
+                await self.wait_for_transcript_and_summary(channel_id, max_wait_seconds=int(os.getenv("MAX_WAIT_SECONDS", 10800)))
 
                 # Retrieve generated data
                 transcript = info.get("meeting_transcript")
