@@ -21,7 +21,12 @@ logger = logging.getLogger(__name__)
 
 
 async def record_meeting_audio(bot, voice_channel_id: int):
-    """Handles the recording of a voice channel using MP3Sink in an async manner."""
+    """
+    Handles the recording of a voice channel using MP3Sink in an async manner.
+    Once recording is finished, it exports all user tracks, then performs
+    batch STT (if using Google STT).
+    """
+
     meeting_info = bot.meeting_voice_channel_info.get(voice_channel_id, {})
 
     guild = bot.guilds[0] if bot.guilds else None
@@ -60,7 +65,11 @@ async def record_meeting_audio(bot, voice_channel_id: int):
 
         # export audio files
         async def export_audio_async(user_id, recorded_audio):
+            """
+            Export the user's MP3 data to an actual MP3 file on disk.
+            """
             loop = asyncio.get_running_loop()
+
             def do_export():
                 try:
                     logger.info("User %s recorded file: %s", user_id, recorded_audio.file)
@@ -71,9 +80,10 @@ async def record_meeting_audio(bot, voice_channel_id: int):
                     return out_path
                 except Exception as e:
                     raise e
+
             return await loop.run_in_executor(None, do_export)
 
-        # Export audio files with async
+        # Export audio for each user
         export_tasks = {
             user_id: export_audio_async(user_id, recorded_audio)
             for user_id, recorded_audio in sink.audio_data.items()
@@ -86,15 +96,21 @@ async def record_meeting_audio(bot, voice_channel_id: int):
             else:
                 exported_files[user_id] = result
 
-        # STT
-        for user_id, file_path in exported_files.items():
-            try:
-                stt_func = select_stt_function()
-                stt_text = await stt_func(file_path)
-                stt_results[user_id] = stt_text
-                logger.info("User %s STT results: %s", user_id, stt_text)
-            except Exception as e:
-                logger.error("Error processing STT for user %s: %s", user_id, e)
+        # STT: Batch or single?
+        try:
+            # 1) Select STT function
+            stt_func = select_stt_function(batch=True)
+
+            # 2) Call STT function with exported files
+            #    key: user_id, value: mp3_file_path
+            raw_stt_outputs = await stt_func(exported_files)
+
+            # raw_stt_outputs are dict: { user_id: [ {offset, duration, text}, ... ] }
+            for user_id, stt_output in raw_stt_outputs.items():
+                stt_results[user_id] = stt_output
+
+        except Exception as e:
+            logger.error("Error processing STT (batch) for channel %s: %s", channel_id, e)
 
         # Combine segments for a timeline
         timeline_segments = []
@@ -125,7 +141,6 @@ async def record_meeting_audio(bot, voice_channel_id: int):
         # Build the transcript
         lines = []
         for t, uid, text in timeline_segments:
-            # Skip empty lines
             if not text.strip():
                 continue
             lines.append(f"[{t}] <@{uid}>: {text}")
@@ -133,7 +148,6 @@ async def record_meeting_audio(bot, voice_channel_id: int):
 
         # Put into dict so forum thread can fetch
         if not meeting_transcript.strip():
-            # TODO: Optimise this
             local_info["meeting_transcript"] = os.getenv("NO_TRANSCRIPT_MESSAGE", "No transcript available.")
             local_info["meeting_summary"] = os.getenv("NO_TRANSCRIPT_MESSAGE", "No transcript available.")
             local_info["meeting_todolist"] = os.getenv("NO_TRANSCRIPT_MESSAGE", "No transcript available.")
