@@ -101,6 +101,7 @@ async def google_stt_with_timeline(audio_file_path: str) -> List[Dict]:
         recognition_output_config=cloud_speech.RecognitionOutputConfig(
             gcs_output_config=cloud_speech.GcsOutputConfig(uri=output_gcs_uri)
         ),
+        processing_strategy=cloud_speech.BatchRecognizeRequest.ProcessingStrategy.DYNAMIC_BATCHING,
     )
 
     try:
