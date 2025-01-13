@@ -2,7 +2,7 @@
 """
 Recording logic using Py-cord's Sinks for each user track.
 """
-
+import json
 import os
 import asyncio
 import logging
@@ -57,13 +57,13 @@ async def record_meeting_audio(bot, voice_channel_id: int):
         logger.info("Recording callback triggered for channel: %s", channel_id)
 
         guild_local = bot.guilds[0] if bot.guilds else None
-        output_folder = f"recordings_{channel_id}"
+        output_folder = f"recordings_{channel_id}_{int(time.time())}"
         os.makedirs(output_folder, exist_ok=True)
 
         exported_files = {}
         stt_results = {}
+        timeline_segments = []
 
-        # export audio files
         async def export_audio_async(user_id, recorded_audio):
             """
             Export the user's MP3 data to an actual MP3 file on disk.
@@ -79,11 +79,12 @@ async def record_meeting_audio(bot, voice_channel_id: int):
                     logger.info("Exported user %s audio to %s", user_id, out_path)
                     return out_path
                 except Exception as e:
-                    raise e
+                    logger.error("Failed to export audio for user %s: %s", user_id, e)
+                    return None
 
             return await loop.run_in_executor(None, do_export)
 
-        # Export audio for each user
+        # Export all user audio data
         export_tasks = {
             user_id: export_audio_async(user_id, recorded_audio)
             for user_id, recorded_audio in sink.audio_data.items()
@@ -91,21 +92,37 @@ async def record_meeting_audio(bot, voice_channel_id: int):
         export_results = await asyncio.gather(*export_tasks.values(), return_exceptions=True)
 
         for user_id, result in zip(export_tasks.keys(), export_results):
-            if isinstance(result, Exception):
+            if isinstance(result, Exception) or result is None:
                 logger.error("Error exporting audio for user %s: %s", user_id, result)
             else:
                 exported_files[user_id] = result
 
-        # STT: Batch or single?
+        # Save meeting metadata
+        meeting_metadata = {
+            "channel_id": channel_id,
+            "guild_id": guild_local.id if guild_local else None,
+            "start_time": local_info.get("start_time", time.time()),
+            "end_time": time.time(),
+            "participants": list(sink.audio_data.keys()),
+        }
+
+        metadata_path = os.path.join(output_folder, "metadata.json")
+        try:
+            with open(metadata_path, "w", encoding="utf-8") as f:
+                json.dump(meeting_metadata, f, ensure_ascii=False, indent=4)
+            logger.info("Saved meeting metadata to %s", metadata_path)
+        except Exception as e:
+            logger.error("Failed to save meeting metadata: %s", e)
+
+        # Perform batch STT
         try:
             # 1) Select STT function
             stt_func = select_stt_function(batch=True)
 
             # 2) Call STT function with exported files
-            #    key: user_id, value: mp3_file_path
             raw_stt_outputs = await stt_func(exported_files)
 
-            # raw_stt_outputs are dict: { user_id: [ {offset, duration, text}, ... ] }
+            # 3) Process STT results
             for user_id, stt_output in raw_stt_outputs.items():
                 stt_results[user_id] = stt_output
 
@@ -113,55 +130,90 @@ async def record_meeting_audio(bot, voice_channel_id: int):
             logger.error("Error processing STT (batch) for channel %s: %s", channel_id, e)
 
         # Combine segments for a timeline
-        timeline_segments = []
-        for user_id, segments in stt_results.items():
-            # Get user display name
-            if guild_local:
-                member = guild_local.get_member(user_id)
-                if member:
-                    user_name = member.display_name
+        try:
+            for user_id, segments in stt_results.items():
+                # Get user display name
+                if guild_local:
+                    member = guild_local.get_member(user_id)
+                    if member:
+                        user_name = member.display_name
+                    else:
+                        user_obj = bot.get_user(user_id)
+                        user_name = user_obj.name if user_obj else str(user_id)
                 else:
-                    user_obj = bot.get_user(user_id)
-                    user_name = user_obj.name if user_obj else str(user_id)
-            else:
-                user_name = str(user_id)
+                    user_name = str(user_id)
 
-            for segment in segments:
-                # Skip empty segments
-                if not segment["text"].strip():
+                for segment in segments:
+                    # Skip empty segments
+                    if not segment["text"].strip():
+                        continue
+                    absolute_time = datetime.fromtimestamp(
+                        local_info.get("start_time", time.time()) + segment["offset"]
+                    ).strftime("%Y-%m-%d %H:%M:%S")
+                    timeline_segments.append((absolute_time, user_name, segment["text"]))
+
+            # Sort segments by time
+            timeline_segments.sort(key=lambda x: x[0])
+
+            # Build the transcript
+            lines = []
+            for t, uid, text in timeline_segments:
+                if not text.strip():
                     continue
-                absolute_time = datetime.fromtimestamp(
-                    local_info.get("start_time", time.time()) + segment["offset"]
-                ).strftime("%Y-%m-%d %H:%M:%S")
-                timeline_segments.append((absolute_time, user_name, segment["text"]))
+                lines.append(f"[{t}] <@{uid}>: {text}")
+            meeting_transcript = "\n".join(lines)
 
-        # Sort segments by time
-        timeline_segments.sort(key=lambda x: x[0])
+        except Exception as e:
+            logger.error("Error constructing timeline segments: %s", e)
+            meeting_transcript = ""
 
-        # Build the transcript
-        lines = []
-        for t, uid, text in timeline_segments:
-            if not text.strip():
-                continue
-            lines.append(f"[{t}] <@{uid}>: {text}")
-        meeting_transcript = "\n".join(lines)
+        # Save timeline segments
+        try:
+            timeline_path = os.path.join(output_folder, "timeline.json")
+            with open(timeline_path, "w", encoding="utf-8") as f:
+                json.dump(timeline_segments, f, ensure_ascii=False, indent=4)
+            logger.info("Saved timeline segments to %s", timeline_path)
+        except Exception as e:
+            logger.error("Failed to save timeline segments: %s", e)
 
-        # Put into dict so forum thread can fetch
-        if not meeting_transcript.strip():
-            local_info["meeting_transcript"] = os.getenv("NO_TRANSCRIPT_MESSAGE", "No transcript available.")
-            local_info["meeting_summary"] = os.getenv("NO_TRANSCRIPT_MESSAGE", "No transcript available.")
-            local_info["meeting_todolist"] = os.getenv("NO_TRANSCRIPT_MESSAGE", "No transcript available.")
-        else:
-            local_info["meeting_transcript"] = meeting_transcript
-            local_info["meeting_summary"] = await generate_summary(meeting_transcript)
-            local_info["meeting_todolist"] = await generate_todolist(meeting_transcript)
+        # Save meeting transcript
+        try:
+            transcript_path = os.path.join(output_folder, "transcript.txt")
+            with open(transcript_path, "w", encoding="utf-8") as f:
+                f.write(meeting_transcript or os.getenv("NO_TRANSCRIPT_MESSAGE", "No transcript available."))
+            logger.info("Saved meeting transcript to %s", transcript_path)
+        except Exception as e:
+            logger.error("Failed to save meeting transcript: %s", e)
 
-        # Debug logs
-        logger.info("Meeting transcript: %s", local_info["meeting_transcript"])
-        logger.info("Meeting summary: %s", local_info["meeting_summary"])
-        logger.info("Meeting to-do list: %s", local_info["meeting_todolist"])
+        # Do summary and to-do list generation
+        try:
+            if meeting_transcript.strip():
+                meeting_summary = await generate_summary(meeting_transcript)
+                meeting_todolist = await generate_todolist(meeting_transcript)
+            else:
+                no_message = os.getenv("NO_TRANSCRIPT_MESSAGE", "No transcript available.")
+                meeting_summary = no_message
+                meeting_todolist = no_message
 
-        # Update the meeting info
+            # Save summary and to-do list
+            summary_path = os.path.join(output_folder, "summary.txt")
+            todolist_path = os.path.join(output_folder, "todolist.txt")
+            with open(summary_path, "w", encoding="utf-8") as f:
+                f.write(meeting_summary)
+            with open(todolist_path, "w", encoding="utf-8") as f:
+                f.write(meeting_todolist)
+            logger.info("Saved meeting summary to %s and to-do list to %s", summary_path, todolist_path)
+
+            # Update local info
+            local_info["meeting_transcript"] = meeting_transcript or os.getenv("NO_TRANSCRIPT_MESSAGE",
+                                                                               "No transcript available.")
+            local_info["meeting_summary"] = meeting_summary
+            local_info["meeting_todolist"] = meeting_todolist
+
+        except Exception as e:
+            logger.error("Error generating summary or to-do list: %s", e)
+
+        # Update local info
         if channel_id in bot.meeting_voice_channel_info:
             bot.meeting_voice_channel_info[channel_id].update(local_info)
 

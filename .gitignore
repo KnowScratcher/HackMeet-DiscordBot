@@ -12,3 +12,5 @@
 *.wav
 
 google_credentials.json
+
+*.json
