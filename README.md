@@ -6,7 +6,9 @@
 babababa (To be added)
 
 ### Quick Preview
-babababa (To be added)
+https://github.com/user-attachments/assets/934d18af-bde9-4d8d-a70d-c213cf91feff
+
+
 
 ### 🔥 Features
 babababa (To be added)
