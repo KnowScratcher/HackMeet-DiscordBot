@@ -24,6 +24,21 @@ https://github.com/user-attachments/assets/934d18af-bde9-4d8d-a70d-c213cf91feff
 * **Multi-Language Support:** The bot can operate in multiple languages, making it accessible to a global audience.
 * Experience the enchanting capabi
 
+## Supported Services
+
+The bot currently supports the following services:
+- Azure STT
+- Azure OpenAI
+- Google STT
+- Gemini
+
+## TODO List
+
+- Support additional services
+- Bug fixes
+- Cloud storage for meeting records...
+- (More features coming soon)
+
 ## 🚀 Deployment
 
 You can deploy the app using Docker or just setup self.
