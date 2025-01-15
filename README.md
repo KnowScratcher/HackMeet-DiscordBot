@@ -3,19 +3,28 @@
 ![badge for project](https://wakapi.xiaobo.app/api/badge/%e5%b0%8f%e6%b3%a2/interval:any/project:HackMeet-DiscordBot)
 
 ### 🌐 Description
-babababa (To be added)
+This is a Discord meeting recording bot that feels nothing short of magical! ✨
+
+Imagine joining a voice channel on Discord and having a dedicated voice channel created just for you. This bot automatically joins the channel and records each participant's speech on separate audio tracks—every individual gets their own distinct recording! Once the meeting concludes, it seamlessly generates precise transcripts and comprehensive meeting summaries. The process is so seamless and sophisticated that it truly seems like magic!
+
+But that's not all—the bot also supports a variety of cutting-edge STT (speech-to-text) and LLM (large language model) services, enhancing its capabilities and making it even more astonishing.
 
 ### Quick Preview
 https://github.com/user-attachments/assets/934d18af-bde9-4d8d-a70d-c213cf91feff
 
 
-
 ### 🔥 Features
-babababa (To be added)
+* **Automatic Voice Channel Creation:** The bot instantly sets up a private voice channel tailored for each user, streamlining the meeting setup process.
+* **Forum Post Generation:** Automatically creates forum posts summarizing the meeting, making it easy to review discussions later.
+* **Accurate Transcription:** Each participant’s speech is recorded on individual tracks and transcribed precisely.
+* **Comprehensive Summaries:** The bot automatically compiles detailed meeting summaries, capturing key points and discussions.
+* **TODO List Organization:** Automatically organizes action items into a clear and concise TODO list.
+* **Multi-Bot Support:** Run several meetings at the same time without any hassle, as the bot supports multiple instances simultaneously.
+* **Extensive STT and LLM Integration:** Integrates with a variety of speech-to-text and large language model services for enhanced functionality, with the flexibility to add more.
+* **Multi-Language Support:** The bot can operate in multiple languages, making it accessible to a global audience.
+* Experience the enchanting capabi
 
 ## 🚀 Deployment
-
-babababa (To be added)
 
 You can deploy the app using Docker or just setup self.
 ### 🐳 Docker
@@ -32,7 +41,58 @@ All requirements are listed in the `requirements.txt` file. To install them, usi
 #### 2️⃣ Configure environment variables
 Edit `.env` file in the root directory and add the following environment variables:
 ```
-Not updated yet
+# ---- Settings ----
+SPEECH_LANGUAGE="en-US"
+AI_OUTPUT_LANGUAGE="en-US"
+DISCORD_MEETING_ROOM_NAME="MeetingRoom"
+DISCORD_MEETING_NOTE_FORUM_NAME="MeetingNotes"
+MAX_WAIT_SECONDS=86400
+MEETING_CLOSE_DELAY=60
+
+# ---- Translate ----
+# When creating a forum post, the content template:
+# {initiator} is the initiator of the meeting,
+# {time} is the time of the meeting,
+# {channel} is the channel of the meeting.
+MEETING_FORUM_CONTENT="**Meeting Minutes**\n\nMeeting Initiator: {initiator}\nMeeting Start Time: {time}\nMeeting Channel: {channel}\n\nParticipant {initiator} joined the meeting"
+# Member join/leave message template, {member} is the member who joined the meeting
+MEETING_JOIN_MESSAGE="{member} joined the meeting"
+MEETING_LEAVE_MESSAGE="{member} left the meeting"
+# Meeting end message template
+# {duration} is the duration of the meeting, {participants} is the list of participants
+MEETING_ENDED_MESSAGE="**Meeting Ended**\nDuration: {duration}\nParticipants: {participants}\n"
+# Generating summary message template (will be deleted after the summary is generated)
+GENERATING_SUMMARY_MESSAGE="Generating meeting summary, please wait..."
+# Transcript message template
+TRANSCRIBING_MESSAGE="Here is the meeting transcript:"
+# After generating summary message
+SUMMARY_MESSAGE="Here is the meeting summary:"
+# After generating to-do list message
+TODOLIST_MESSAGE="Here is the to-do list:"
+# No transcript message
+NO_TRANSCRIPT_MESSAGE="No transcript for this meeting"
+
+# ---- Keys ----
+STT_SERVICE="google"
+# | Azure, azure |
+AZURE_SPEECH_KEY="ADD YOUR AZURE SPEECH KEY HERE"
+AZURE_SPEECH_REGION="japanwest"
+# | Google, google |
+GOOGLE_APPLICATION_CREDENTIALS="ADD YOUR GOOGLE APPLICATION CREDENTIALS PATH HERE"
+GCS_BUCKET_NAME="hackitbukket"
+GCP_PROJECT_ID="arctic-sentry-445704-k5"
+GCP_LOCATION="global"
+
+AI_SERVICE="gemini"
+MODEL_USE="gemini-2.0-flash-exp"
+# | Azure OpenAI, azureopenai |
+AZURE_OPENAI_ENDPOINT="https://hsh2024.openai.azure.com/"
+AZURE_OPENAI_API_KEY="ADD YOUR AZURE OPENAI API KEY HERE"
+AZURE_OPENAI_API_VERSION="2024-05-01-preview"
+# | Gemini, gemini |
+GEMINI_API_KEY="ADD YOUR GEMINI API KEY HERE"
+
+BOT_TOKENS="ADD YOUR BOT TOKENS HERE"
 ```
 
 #### 3️⃣ Run the app
