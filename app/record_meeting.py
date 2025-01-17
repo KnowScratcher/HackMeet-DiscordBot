@@ -6,11 +6,13 @@ import json
 import os
 import asyncio
 import logging
+import subprocess
+import tempfile
 import time
 from datetime import datetime
+from typing import List
 
 import discord
-from pydub import AudioSegment
 from discord.sinks import MP3Sink
 
 from app.stt_service.stt_select import select_stt_function
@@ -18,6 +20,101 @@ from app.summary.agents.summary import generate_summary
 from app.summary.agents.todolist import generate_todolist
 
 logger = logging.getLogger(__name__)
+
+
+async def export_audio_async(user_id: int,
+                             recorded_audio,
+                             output_folder: str,
+                             max_segment_duration: int = 3600) -> List[str]:
+    """Exports a user's MP3 data to one or multiple MP3 files on disk,
+    splitting large audio if needed via FFmpeg.
+
+    This function first writes the recorded MP3 data to a local temp file,
+    then uses FFmpeg segment mode to split the file if it exceeds 'max_segment_duration'.
+
+    Args:
+        user_id: The Discord user ID.
+        recorded_audio: The recorded BytesIO-like audio data (already in MP3 format).
+        output_folder: The directory where output files will be saved.
+        max_segment_duration: Maximum duration (in seconds) for one segment.
+            Files longer than this duration will be split into multiple segments.
+
+    Returns:
+        A list of file paths for the exported segments for this user.
+    """
+    loop = asyncio.get_running_loop()
+
+    def do_export() -> List[str]:
+        """Write the recorded audio to a temp file, then use FFmpeg to split it."""
+        try:
+            # 1) Build a temp file to store the recorded audio
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmpfile:
+                recorded_audio.file.seek(0)
+                tmpfile.write(recorded_audio.file.read())
+                tmpfile.flush()
+                tmp_input_path = tmpfile.name
+
+            # 2) Build FFmpeg command to split the audio
+            #    -f segment：use segment muxer to split the file
+            #    -segment_time：set the duration of each segment
+            #    -c copy：copy the audio stream without re-encoding
+            #    -y：overwrite existing files
+            output_pattern = os.path.join(output_folder, f"{user_id}_part_%03d.mp3")
+            command = [
+                "ffmpeg",
+                "-hide_banner",
+                "-y",
+                "-i", tmp_input_path,
+                "-f", "segment",
+                "-segment_time", str(max_segment_duration),
+                "-c", "copy",
+                output_pattern
+            ]
+
+            # 3) Execute FFmpeg command
+            logger.info("Running FFmpeg command: %s", " ".join(command))
+            ffmpeg_result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False  # Use check=False to handle return code manually
+            )
+
+            # Check if FFmpeg failed
+            if ffmpeg_result.returncode != 0:
+                logger.error(
+                    "FFmpeg failed with return code %d.\nSTDOUT: %s\nSTDERR: %s",
+                    ffmpeg_result.returncode,
+                    ffmpeg_result.stdout.decode("utf-8", errors="ignore"),
+                    ffmpeg_result.stderr.decode("utf-8", errors="ignore"),
+                )
+                return []
+
+            # 4) Collect the output files
+            out_paths = []
+            for fname in os.listdir(output_folder):
+                if fname.startswith(f"{user_id}_part_") and fname.endswith(".mp3"):
+                    full_path = os.path.join(output_folder, fname)
+                    out_paths.append(full_path)
+
+            out_paths.sort()
+            logger.info("Exported user %s audio to %d segment(s): %s",
+                        user_id, len(out_paths), out_paths)
+
+            # 5) Clean up the temp input file
+            try:
+                os.remove(tmp_input_path)
+            except OSError:
+                pass
+
+            return out_paths
+
+        except Exception as exc:
+            logger.error("Failed to export audio for user %s: %s", user_id, exc)
+            return []
+
+    # Run the export in a separate thread
+    return await loop.run_in_executor(None, do_export)
 
 
 async def record_meeting_audio(bot, voice_channel_id: int):
@@ -64,29 +161,9 @@ async def record_meeting_audio(bot, voice_channel_id: int):
         stt_results = {}
         timeline_segments = []
 
-        async def export_audio_async(user_id, recorded_audio):
-            """
-            Export the user's MP3 data to an actual MP3 file on disk.
-            """
-            loop = asyncio.get_running_loop()
-
-            def do_export():
-                try:
-                    logger.info("User %s recorded file: %s", user_id, recorded_audio.file)
-                    user_segment = AudioSegment.from_file(recorded_audio.file, format="mp3")
-                    out_path = os.path.join(output_folder, f"{user_id}.mp3")
-                    user_segment.export(out_path, format="mp3")
-                    logger.info("Exported user %s audio to %s", user_id, out_path)
-                    return out_path
-                except Exception as e:
-                    logger.error("Failed to export audio for user %s: %s", user_id, e)
-                    return None
-
-            return await loop.run_in_executor(None, do_export)
-
         # Export all user audio data
         export_tasks = {
-            user_id: export_audio_async(user_id, recorded_audio)
+            user_id: export_audio_async(user_id, recorded_audio, output_folder)
             for user_id, recorded_audio in sink.audio_data.items()
         }
         export_results = await asyncio.gather(*export_tasks.values(), return_exceptions=True)
