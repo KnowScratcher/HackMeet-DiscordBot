@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import time
 from datetime import datetime
-from typing import List
+from typing import List, Dict, Any
 
 import discord
 from discord.sinks import MP3Sink
@@ -18,7 +18,8 @@ from discord.sinks import MP3Sink
 from app.stt_service.stt_select import select_stt_function
 from app.summary.agents.summary import generate_summary
 from app.summary.agents.todolist import generate_todolist
-# from app.utils.google_drive import upload_to_drive
+from app.utils.google_drive import upload_to_drive
+from app.utils.retry import async_retry
 
 logger = logging.getLogger(__name__)
 
@@ -140,8 +141,14 @@ async def record_meeting_audio(bot, voice_channel_id: int):
     # Disconnect if already connected
     for vc in bot.voice_clients:
         if vc.guild == guild:
-            await vc.disconnect(force=True)
+            try:
+                if vc.recording:
+                    vc.stop_recording()
+                await vc.disconnect(force=True)
+            except Exception as e:
+                logger.error("Error disconnecting existing voice client: %s", e)
 
+    voice_client = None
     try:
         voice_client = await voice_channel.connect()
         logger.info("Bot %s joined %s for recording.", bot.user.name, voice_channel.name)
@@ -171,182 +178,254 @@ async def record_meeting_audio(bot, voice_channel_id: int):
         timeline_segments = []
 
         # Export all user audio data
+        async def export_with_retry(user_id: int, recorded_audio: Any) -> List[str]:
+            result = await async_retry(
+                export_audio_async,
+                user_id, recorded_audio, output_folder,
+                max_attempts=3,
+                delay=2.0
+            )
+            if result is None:
+                logger.error("Failed to export audio for user %s after all retries", user_id)
+            return result or []
+
         export_tasks = {
-            user_id: export_audio_async(user_id, recorded_audio, output_folder)
+            user_id: export_with_retry(user_id, recorded_audio)
             for user_id, recorded_audio in sink.audio_data.items()
         }
         export_results = await asyncio.gather(*export_tasks.values(), return_exceptions=True)
 
         for user_id, result in zip(export_tasks.keys(), export_results):
-            if isinstance(result, Exception) or result is None:
+            if isinstance(result, Exception):
                 logger.error("Error exporting audio for user %s: %s", user_id, result)
             else:
                 exported_files[user_id] = result
 
         # Save meeting metadata
-        meeting_metadata = {
-            "channel_id": channel_id,
-            "guild_id": guild_local.id if guild_local else None,
-            "start_time": local_info.get("start_time", time.time()),
-            "end_time": time.time(),
-            "participants": list(sink.audio_data.keys()),
-        }
+        async def save_metadata():
+            meeting_metadata = {
+                "channel_id": channel_id,
+                "guild_id": guild_local.id if guild_local else None,
+                "start_time": local_info.get("start_time", time.time()),
+                "end_time": time.time(),
+                "participants": list(sink.audio_data.keys()),
+            }
+            
+            metadata_path = os.path.join(output_folder, "metadata.json")
+            def _save():
+                with open(metadata_path, "w", encoding="utf-8") as f:
+                    json.dump(meeting_metadata, f, ensure_ascii=False, indent=4)
+            
+            await async_retry(
+                lambda: asyncio.to_thread(_save),
+                max_attempts=3,
+                delay=1.0
+            )
+            return metadata_path
 
-        metadata_path = os.path.join(output_folder, "metadata.json")
-        try:
-            with open(metadata_path, "w", encoding="utf-8") as f:
-                json.dump(meeting_metadata, f, ensure_ascii=False, indent=4)
-            logger.info("Saved meeting metadata to %s", metadata_path)
-        except Exception as e:
-            logger.error("Failed to save meeting metadata: %s", e)
+        metadata_path = await save_metadata()
 
         # Perform batch STT
-        try:
-            # 1) Select STT function
-            stt_func = select_stt_function(batch=True)
+        async def perform_stt():
+            try:
+                stt_func = select_stt_function(batch=True)
+                return await async_retry(
+                    stt_func,
+                    exported_files,
+                    max_attempts=3,
+                    delay=5.0
+                )
+            except Exception as e:
+                logger.error("Error in STT processing: %s", e)
+                return {}
 
-            # 2) Call STT function with exported files
-            raw_stt_outputs = await stt_func(exported_files)
-
-            # 3) Process STT results
-            for user_id, stt_output in raw_stt_outputs.items():
-                stt_results[user_id] = stt_output
-
-        except Exception as e:
-            logger.error("Error processing STT (batch) for channel %s: %s", channel_id, e)
+        raw_stt_outputs = await perform_stt()
+        for user_id, stt_output in raw_stt_outputs.items():
+            stt_results[user_id] = stt_output
 
         # Combine segments for a timeline
-        try:
-            for user_id, segments in stt_results.items():
-                # Get user display name
-                if guild_local:
-                    member = guild_local.get_member(user_id)
-                    if member:
-                        user_name = member.display_name
+        async def generate_timeline():
+            try:
+                for user_id, segments in stt_results.items():
+                    if guild_local:
+                        member = guild_local.get_member(user_id)
+                        user_name = member.display_name if member else str(user_id)
                     else:
-                        user_obj = bot.get_user(user_id)
-                        user_name = user_obj.name if user_obj else str(user_id)
-                else:
-                    user_name = str(user_id)
+                        user_name = str(user_id)
 
-                for segment in segments:
-                    # Skip empty segments
-                    if not segment["text"].strip():
+                    for segment in segments:
+                        # Skip empty segments
+                        if not segment["text"].strip():
+                            continue
+                        absolute_time = datetime.fromtimestamp(
+                            local_info.get("start_time", time.time()) + segment["offset"]
+                        ).strftime("%Y-%m-%d %H:%M:%S")
+                        timeline_segments.append((absolute_time, user_name, segment["text"]))
+
+                # Sort segments by time
+                timeline_segments.sort(key=lambda x: x[0])
+
+                # Build the transcript
+                lines = []
+                for t, uid, text in timeline_segments:
+                    if not text.strip():
                         continue
-                    absolute_time = datetime.fromtimestamp(
-                        local_info.get("start_time", time.time()) + segment["offset"]
-                    ).strftime("%Y-%m-%d %H:%M:%S")
-                    timeline_segments.append((absolute_time, user_name, segment["text"]))
+                    lines.append(f"[{t}] <@{uid}>: {text}")
+                meeting_transcript = "\n".join(lines)
 
-            # Sort segments by time
-            timeline_segments.sort(key=lambda x: x[0])
+                # Save timeline segments
+                timeline_path = os.path.join(output_folder, "timeline.json")
+                def _save_timeline():
+                    with open(timeline_path, "w", encoding="utf-8") as f:
+                        json.dump(timeline_segments, f, ensure_ascii=False, indent=4)
+                
+                await async_retry(
+                    lambda: asyncio.to_thread(_save_timeline),
+                    max_attempts=3,
+                    delay=1.0
+                )
 
-            # Build the transcript
-            lines = []
-            for t, uid, text in timeline_segments:
-                if not text.strip():
-                    continue
-                lines.append(f"[{t}] <@{uid}>: {text}")
-            meeting_transcript = "\n".join(lines)
+                return meeting_transcript, timeline_path
 
-        except Exception as e:
-            logger.error("Error constructing timeline segments: %s", e)
-            meeting_transcript = ""
+            except Exception as e:
+                logger.error("Error generating timeline: %s", e)
+                return "", None
 
-        # Save timeline segments
-        try:
-            timeline_path = os.path.join(output_folder, "timeline.json")
-            with open(timeline_path, "w", encoding="utf-8") as f:
-                json.dump(timeline_segments, f, ensure_ascii=False, indent=4)
-            logger.info("Saved timeline segments to %s", timeline_path)
-        except Exception as e:
-            logger.error("Failed to save timeline segments: %s", e)
+        meeting_transcript, timeline_path = await generate_timeline()
 
         # Save meeting transcript
-        try:
+        async def save_transcript():
             transcript_path = os.path.join(output_folder, "transcript.txt")
-            with open(transcript_path, "w", encoding="utf-8") as f:
-                f.write(meeting_transcript or os.getenv("NO_TRANSCRIPT_MESSAGE", "No transcript available."))
-            logger.info("Saved meeting transcript to %s", transcript_path)
-        except Exception as e:
-            logger.error("Failed to save meeting transcript: %s", e)
+            def _save():
+                with open(transcript_path, "w", encoding="utf-8") as f:
+                    f.write(meeting_transcript or os.getenv("NO_TRANSCRIPT_MESSAGE", "No transcript available."))
+            
+            await async_retry(
+                lambda: asyncio.to_thread(_save),
+                max_attempts=3,
+                delay=1.0
+            )
+            return transcript_path
+
+        transcript_path = await save_transcript()
 
         # Do summary and to-do list generation
-        try:
+        async def generate_summary_and_todo():
             if meeting_transcript.strip():
-                meeting_summary = await generate_summary(meeting_transcript)
-                meeting_todolist = await generate_todolist(meeting_transcript)
+                summary = await async_retry(
+                    generate_summary,
+                    meeting_transcript,
+                    max_attempts=3,
+                    delay=5.0
+                )
+                todolist = await async_retry(
+                    generate_todolist,
+                    meeting_transcript,
+                    max_attempts=3,
+                    delay=5.0
+                )
             else:
                 no_message = os.getenv("NO_TRANSCRIPT_MESSAGE", "No transcript available.")
-                meeting_summary = no_message
-                meeting_todolist = no_message
+                summary = todolist = no_message
 
             # Save summary and to-do list
             summary_path = os.path.join(output_folder, "summary.txt")
             todolist_path = os.path.join(output_folder, "todolist.txt")
-            with open(summary_path, "w", encoding="utf-8") as f:
-                f.write(meeting_summary)
-            with open(todolist_path, "w", encoding="utf-8") as f:
-                f.write(meeting_todolist)
-            logger.info("Saved meeting summary to %s and to-do list to %s", summary_path, todolist_path)
+            
+            def _save_summary():
+                with open(summary_path, "w", encoding="utf-8") as f:
+                    f.write(summary)
+                
+            def _save_todolist():
+                with open(todolist_path, "w", encoding="utf-8") as f:
+                    f.write(todolist)
 
-            # Update local info
-            local_info["meeting_transcript"] = meeting_transcript or os.getenv("NO_TRANSCRIPT_MESSAGE",
-                                                                               "No transcript available.")
-            local_info["meeting_summary"] = meeting_summary
-            local_info["meeting_todolist"] = meeting_todolist
+            await asyncio.gather(
+                async_retry(lambda: asyncio.to_thread(_save_summary), max_attempts=3, delay=1.0),
+                async_retry(lambda: asyncio.to_thread(_save_todolist), max_attempts=3, delay=1.0)
+            )
 
-        except Exception as e:
-            logger.error("Error generating summary or to-do list: %s", e)
-        #
-        # # Upload files to Google Drive if configured
-        # drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-        # if drive_folder_id:
-        #     try:
-        #         # Upload transcript
-        #         if os.path.exists(transcript_path):
-        #             await upload_to_drive(transcript_path, drive_folder_id)
-        #
-        #         # Upload summary
-        #         if os.path.exists(summary_path):
-        #             await upload_to_drive(summary_path, drive_folder_id)
-        #
-        #         # Upload todolist
-        #         if os.path.exists(todolist_path):
-        #             await upload_to_drive(todolist_path, drive_folder_id)
-        #
-        #         # Upload metadata
-        #         if os.path.exists(metadata_path):
-        #             await upload_to_drive(metadata_path, drive_folder_id)
-        #
-        #         # Upload timeline
-        #         if os.path.exists(timeline_path):
-        #             await upload_to_drive(timeline_path, drive_folder_id)
-        #
-        #         logger.info("Successfully uploaded meeting files to Google Drive")
-        #     except Exception as e:
-        #         logger.error("Failed to upload files to Google Drive: %s", e)
+            return summary, todolist, summary_path, todolist_path
+
+        meeting_summary, meeting_todolist, summary_path, todolist_path = await generate_summary_and_todo()
+
+        # Upload files to Google Drive if configured
+        drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+        if drive_folder_id:
+            files_to_upload = [
+                (transcript_path, "transcript"),
+                (summary_path, "summary"),
+                (todolist_path, "todolist"),
+                (metadata_path, "metadata"),
+                (timeline_path, "timeline")
+            ]
+            
+            for file_path, file_type in files_to_upload:
+                if os.path.exists(file_path):
+                    result = await async_retry(
+                        upload_to_drive,
+                        file_path,
+                        drive_folder_id,
+                        max_attempts=3,
+                        delay=2.0
+                    )
+                    if result:
+                        logger.info("Successfully uploaded %s to Google Drive", file_type)
+                    else:
+                        logger.error("Failed to upload %s to Google Drive after all retries", file_type)
 
         # Update local info
+        local_info.update({
+            "meeting_transcript": meeting_transcript or os.getenv("NO_TRANSCRIPT_MESSAGE", "No transcript available."),
+            "meeting_summary": meeting_summary,
+            "meeting_todolist": meeting_todolist
+        })
+
         if channel_id in bot.meeting_voice_channel_info:
             bot.meeting_voice_channel_info[channel_id].update(local_info)
 
-    # Start recording
-    voice_client.start_recording(sink, finished_callback, voice_channel_id, meeting_info, sync_start=True)
-
-    if voice_channel_id in bot.meeting_voice_channel_info:
-        bot.meeting_voice_channel_info[voice_channel_id]["recording_task"] = asyncio.current_task()
-
-    # Keep the recording task alive without blocking other tasks
+    # Start recording with error handling
     try:
+        voice_client.start_recording(sink, finished_callback, voice_channel_id, meeting_info, sync_start=True)
+        
+        if voice_channel_id in bot.meeting_voice_channel_info:
+            bot.meeting_voice_channel_info[voice_channel_id]["recording_task"] = asyncio.current_task()
+            bot.meeting_voice_channel_info[voice_channel_id]["voice_client"] = voice_client
+
+        # Keep the recording task alive without blocking other tasks
         while True:
+            if not voice_client.is_connected():
+                logger.info("Voice client disconnected, stopping recording.")
+                break
             await asyncio.sleep(1)
+
     except asyncio.CancelledError:
         logger.info("Recording task was canceled. Stopping recording.")
-        voice_client.stop_recording()
+        if voice_client and voice_client.is_connected():
+            try:
+                if voice_client.recording:
+                    voice_client.stop_recording()
+                await voice_client.disconnect(force=True)
+            except Exception as e:
+                logger.error("Error during cleanup after cancellation: %s", e)
         raise
+
     except Exception as exc:
         logger.error("Error in recording task: %s", exc)
+
     finally:
-        if voice_client.is_connected():
-            await voice_client.disconnect(force=True)
+        # Clean up resources
+        try:
+            if voice_client:
+                if voice_client.is_connected():
+                    if voice_client.recording:
+                        voice_client.stop_recording()
+                    await voice_client.disconnect(force=True)
+                
+            # Clean up meeting info
+            if voice_channel_id in bot.meeting_voice_channel_info:
+                info = bot.meeting_voice_channel_info[voice_channel_id]
+                info["recording_task"] = None
+                info["voice_client"] = None
+        except Exception as e:
+            logger.error("Error during final cleanup: %s", e)
