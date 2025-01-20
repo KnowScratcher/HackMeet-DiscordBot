@@ -18,6 +18,7 @@ from discord.sinks import MP3Sink
 from app.stt_service.stt_select import select_stt_function
 from app.summary.agents.summary import generate_summary
 from app.summary.agents.todolist import generate_todolist
+# from app.utils.google_drive import upload_to_drive
 
 logger = logging.getLogger(__name__)
 
@@ -289,6 +290,34 @@ async def record_meeting_audio(bot, voice_channel_id: int):
 
         except Exception as e:
             logger.error("Error generating summary or to-do list: %s", e)
+        #
+        # # Upload files to Google Drive if configured
+        # drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+        # if drive_folder_id:
+        #     try:
+        #         # Upload transcript
+        #         if os.path.exists(transcript_path):
+        #             await upload_to_drive(transcript_path, drive_folder_id)
+        #
+        #         # Upload summary
+        #         if os.path.exists(summary_path):
+        #             await upload_to_drive(summary_path, drive_folder_id)
+        #
+        #         # Upload todolist
+        #         if os.path.exists(todolist_path):
+        #             await upload_to_drive(todolist_path, drive_folder_id)
+        #
+        #         # Upload metadata
+        #         if os.path.exists(metadata_path):
+        #             await upload_to_drive(metadata_path, drive_folder_id)
+        #
+        #         # Upload timeline
+        #         if os.path.exists(timeline_path):
+        #             await upload_to_drive(timeline_path, drive_folder_id)
+        #
+        #         logger.info("Successfully uploaded meeting files to Google Drive")
+        #     except Exception as e:
+        #         logger.error("Failed to upload files to Google Drive: %s", e)
 
         # Update local info
         if channel_id in bot.meeting_voice_channel_info:

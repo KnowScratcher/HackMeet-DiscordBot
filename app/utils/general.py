@@ -1,4 +1,4 @@
-# app/utils.py
+# app/util.py
 """
 General utility functions.
 """

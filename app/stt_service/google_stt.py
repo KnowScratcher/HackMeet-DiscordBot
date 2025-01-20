@@ -14,7 +14,7 @@ from typing import Dict, List
 from google.cloud import speech_v2, storage
 from google.cloud.speech_v2.types import cloud_speech
 
-from app.utils import _convert_to_wav
+from app.utils.general import _convert_to_wav
 
 logger = logging.getLogger(__name__)
 

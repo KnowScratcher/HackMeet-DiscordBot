@@ -14,7 +14,7 @@ from discord.ext import commands
 from discord import VoiceState, Intents, Member, ForumChannel
 
 from app.forum import post_with_file
-from app.utils import generate_meeting_room_name
+from app.utils.general import generate_meeting_room_name
 
 logger = logging.getLogger(__name__)
 

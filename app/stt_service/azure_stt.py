@@ -9,7 +9,7 @@ import logging
 from typing import List, Dict
 import azure.cognitiveservices.speech as speechsdk
 
-from app.utils import _convert_to_wav
+from app.utils.general import _convert_to_wav
 
 logger = logging.getLogger(__name__)
 
