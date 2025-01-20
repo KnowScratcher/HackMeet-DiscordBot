@@ -154,6 +154,14 @@ async def record_meeting_audio(bot, voice_channel_id: int):
     async def finished_callback(sink: MP3Sink, channel_id: int, local_info: dict):
         logger.info("Recording callback triggered for channel: %s", channel_id)
 
+        # Check if generation is already completed
+        if local_info.get("generation_completed"):
+            logger.info("Generation already completed for channel %s, skipping.", channel_id)
+            return
+
+        # Mark generation as completed
+        local_info["generation_completed"] = True
+
         guild_local = bot.guilds[0] if bot.guilds else None
         output_folder = f"recordings_{channel_id}_{int(time.time())}"
         os.makedirs(output_folder, exist_ok=True)
