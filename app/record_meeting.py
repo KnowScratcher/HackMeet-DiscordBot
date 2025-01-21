@@ -183,8 +183,8 @@ async def record_meeting_audio(bot, voice_channel_id: int):
             result = await async_retry(
                 export_audio_async,
                 user_id, recorded_audio, output_folder,
-                max_attempts=3,
-                delay=2.0
+                max_attempts=5,
+                delay=10.0
             )
             if result is None:
                 logger.error("Failed to export audio for user %s after all retries", user_id)
@@ -220,7 +220,7 @@ async def record_meeting_audio(bot, voice_channel_id: int):
             await async_retry(
                 lambda: asyncio.to_thread(_save),
                 max_attempts=3,
-                delay=1.0
+                delay=10.0
             )
             return metadata_path
 
@@ -234,7 +234,7 @@ async def record_meeting_audio(bot, voice_channel_id: int):
                     stt_func,
                     exported_files,
                     max_attempts=3,
-                    delay=5.0
+                    delay=60.0
                 )
             except Exception as e:
                 logger.error("Error in STT processing: %s", e)
@@ -283,7 +283,7 @@ async def record_meeting_audio(bot, voice_channel_id: int):
                 await async_retry(
                     lambda: asyncio.to_thread(_save_timeline),
                     max_attempts=3,
-                    delay=1.0
+                    delay=10.0
                 )
 
                 return meeting_transcript, timeline_path
@@ -301,7 +301,7 @@ async def record_meeting_audio(bot, voice_channel_id: int):
             meeting_transcript,
             meeting_start_time,
             max_attempts=3,
-            delay=2.0
+            delay=10.0
         )
         
         if not meeting_title:
@@ -327,7 +327,7 @@ async def record_meeting_audio(bot, voice_channel_id: int):
             await async_retry(
                 lambda: asyncio.to_thread(_save),
                 max_attempts=3,
-                delay=1.0
+                delay=10.0
             )
             return transcript_path
 
@@ -340,13 +340,13 @@ async def record_meeting_audio(bot, voice_channel_id: int):
                     generate_summary,
                     meeting_transcript,
                     max_attempts=3,
-                    delay=5.0
+                    delay=60.0
                 )
                 todolist = await async_retry(
                     generate_todolist,
                     meeting_transcript,
                     max_attempts=3,
-                    delay=5.0
+                    delay=60.0
                 )
             else:
                 no_message = os.getenv("NO_TRANSCRIPT_MESSAGE", "No transcript available.")
@@ -365,8 +365,8 @@ async def record_meeting_audio(bot, voice_channel_id: int):
                     f.write(todolist)
 
             await asyncio.gather(
-                async_retry(lambda: asyncio.to_thread(_save_summary), max_attempts=3, delay=1.0),
-                async_retry(lambda: asyncio.to_thread(_save_todolist), max_attempts=3, delay=1.0)
+                async_retry(lambda: asyncio.to_thread(_save_summary), max_attempts=5, delay=10.0),
+                async_retry(lambda: asyncio.to_thread(_save_todolist), max_attempts=5, delay=10.0)
             )
 
             return summary, todolist, summary_path, todolist_path
@@ -404,8 +404,8 @@ async def record_meeting_audio(bot, voice_channel_id: int):
                     user_names,
                     drive_folder_id,
                     output_folder,  # Pass local folder for cleanup
-                    max_attempts=3,
-                    delay=2.0
+                    max_attempts=6,
+                    delay=20.0
                 )
                 
                 if success:
