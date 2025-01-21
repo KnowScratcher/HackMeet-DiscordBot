@@ -10,6 +10,7 @@ import logging
 import os
 import re
 from typing import Dict, List
+from itertools import islice
 
 from google.cloud import speech_v2, storage
 from google.cloud.speech_v2.types import cloud_speech
@@ -17,6 +18,13 @@ from google.cloud.speech_v2.types import cloud_speech
 from app.utils.general import _convert_to_wav
 
 logger = logging.getLogger(__name__)
+
+def chunks(data: dict, size: int):
+    """Split dictionary into chunks of specified size."""
+    it = iter(data.items())
+    for i in range(0, len(data), size):
+        chunk = dict(islice(it, size))
+        yield chunk
 
 async def google_stt_with_timeline_batch(audio_file_dict: Dict[str, List[str]]) -> Dict[str, List[Dict]]:
     language_code = os.getenv("SPEECH_LANGUAGE", "en-US")
@@ -97,113 +105,120 @@ async def google_stt_with_timeline_batch(audio_file_dict: Dict[str, List[str]]) 
             logger.error("Create Recognizer failed: %s", create_ex)
             return {}
 
-    batch_files = []
-    for flat_id, gcs_uri in gcs_uri_dict.items():
-        batch_files.append(cloud_speech.BatchRecognizeFileMetadata(uri=gcs_uri))
+    final_results: Dict[str, List[Dict]] = {}
+    BATCH_SIZE = 10  # Process 10 files at a time
 
-    if not batch_files:
-        logger.error("No files to process in batch.")
-        return {}
+    # Process files in batches
+    for batch_number, batch_dict in enumerate(chunks(gcs_uri_dict, BATCH_SIZE)):
+        logger.info("Processing batch %d with %d files", batch_number + 1, len(batch_dict))
+        batch_files = []
+        for flat_id, gcs_uri in batch_dict.items():
+            batch_files.append(cloud_speech.BatchRecognizeFileMetadata(uri=gcs_uri))
 
-    output_gcs_uri = f"gs://{bucket_name}/transcripts/batch_results/"
-    request = cloud_speech.BatchRecognizeRequest(
-        recognizer=recognizer.name,
-        config=cloud_speech.RecognitionConfig(
-            auto_decoding_config=cloud_speech.AutoDetectDecodingConfig(),
-            language_codes=[language_code],
-            model="long",
-            features=cloud_speech.RecognitionFeatures(enable_word_time_offsets=True),
-        ),
-        files=batch_files,
-        recognition_output_config=cloud_speech.RecognitionOutputConfig(
-            gcs_output_config=cloud_speech.GcsOutputConfig(uri=output_gcs_uri)
-        ),
-        processing_strategy=cloud_speech.BatchRecognizeRequest.ProcessingStrategy.DYNAMIC_BATCHING,
-    )
+        if not batch_files:
+            continue
 
-    try:
-        operation = await asyncio.to_thread(
-            client.batch_recognize,
-            request=request,
-            timeout=int(os.getenv("MAX_WAIT_SECONDS", 86400))
+        output_gcs_uri = f"gs://{bucket_name}/transcripts/batch_results/"
+        request = cloud_speech.BatchRecognizeRequest(
+            recognizer=recognizer.name,
+            config=cloud_speech.RecognitionConfig(
+                auto_decoding_config=cloud_speech.AutoDetectDecodingConfig(),
+                language_codes=[language_code],
+                model="long",
+                features=cloud_speech.RecognitionFeatures(enable_word_time_offsets=True),
+            ),
+            files=batch_files,
+            recognition_output_config=cloud_speech.RecognitionOutputConfig(
+                gcs_output_config=cloud_speech.GcsOutputConfig(uri=output_gcs_uri)
+            ),
+            processing_strategy=cloud_speech.BatchRecognizeRequest.ProcessingStrategy.DYNAMIC_BATCHING,
         )
-        logger.info("Batch Recognize operation initiated...")
-    except Exception as ex:
-        logger.error("Batch Recognize initiation failed: %s", ex)
-        return {}
 
-    response = None
-    while response is None:
         try:
-            response = await asyncio.to_thread(
-                operation.result,
+            operation = await asyncio.to_thread(
+                client.batch_recognize,
+                request=request,
                 timeout=int(os.getenv("MAX_WAIT_SECONDS", 86400))
             )
+            logger.info("Batch %d: Recognize operation initiated...", batch_number + 1)
         except Exception as ex:
-            logger.warning("Batch Recognize NOT ready yet: %s", ex)
-            await asyncio.sleep(30)
+            logger.error("Batch %d: Recognize initiation failed: %s", batch_number + 1, ex)
+            continue
 
-    final_results: Dict[str, List[Dict]] = {}
-    try:
-        for input_uri, file_result in response.results.items():
-            matched_flat_id = None
-            for flat_id, uri in gcs_uri_dict.items():
-                if uri == input_uri:
-                    matched_flat_id = flat_id
-                    break
-            if not matched_flat_id:
-                logger.warning("Unmatched input URI found: %s", input_uri)
-                continue
+        response = None
+        while response is None:
+            try:
+                response = await asyncio.to_thread(
+                    operation.result,
+                    timeout=int(os.getenv("MAX_WAIT_SECONDS", 86400))
+                )
+            except Exception as ex:
+                logger.warning("Batch %d: Recognize NOT ready yet: %s", batch_number + 1, ex)
+                await asyncio.sleep(30)
 
-            # Get the original user_id
-            original_user_id = user_id_map.get(matched_flat_id, matched_flat_id)
+        try:
+            for input_uri, file_result in response.results.items():
+                matched_flat_id = None
+                for flat_id, uri in batch_dict.items():
+                    if uri == input_uri:
+                        matched_flat_id = flat_id
+                        break
+                if not matched_flat_id:
+                    logger.warning("Unmatched input URI found: %s", input_uri)
+                    continue
 
-            recognized_output_uri = file_result.uri
-            logger.info(f"For flat_id: {matched_flat_id}, recognized output URI: {recognized_output_uri}")
+                # Get the original user_id
+                original_user_id = user_id_map.get(matched_flat_id, matched_flat_id)
 
-            match = re.match(r"gs://([^/]+)/(.+)", recognized_output_uri)
-            if not match:
-                logger.error("Cannot parse GCS URI: %s", recognized_output_uri)
-                continue
+                recognized_output_uri = file_result.uri
+                logger.info(f"For flat_id: {matched_flat_id}, recognized output URI: {recognized_output_uri}")
 
-            output_bucket, output_object = match.groups()
-            result_blob = storage_client.bucket(output_bucket).blob(output_object)
-            results_bytes = await asyncio.to_thread(result_blob.download_as_bytes)
+                match = re.match(r"gs://([^/]+)/(.+)", recognized_output_uri)
+                if not match:
+                    logger.error("Cannot parse GCS URI: %s", recognized_output_uri)
+                    continue
 
-            batch_recognize_results = cloud_speech.BatchRecognizeResults.from_json(
-                results_bytes, ignore_unknown_fields=True
-            )
+                output_bucket, output_object = match.groups()
+                result_blob = storage_client.bucket(output_bucket).blob(output_object)
+                results_bytes = await asyncio.to_thread(result_blob.download_as_bytes)
 
-            user_results_list = []
-            for result in batch_recognize_results.results:
-                for alternative in result.alternatives:
-                    words = alternative.words
-                    if not words:
-                        user_results_list.append({
-                            "offset": 0.0,
-                            "duration": 0.0,
-                            "text": alternative.transcript
-                        })
-                    else:
-                        first_word = words[0]
-                        last_word = words[-1]
-                        start_seconds = first_word.start_offset.total_seconds()
-                        end_seconds = last_word.end_offset.total_seconds()
-                        offset_val = start_seconds
-                        duration_val = max(0.0, end_seconds - start_seconds)
-                        user_results_list.append({
-                            "offset": offset_val,
-                            "duration": duration_val,
-                            "text": alternative.transcript
-                        })
-            # Combine results for the same user
-            if original_user_id in final_results:
-                final_results[original_user_id].extend(user_results_list)
-            else:
-                final_results[original_user_id] = user_results_list
+                batch_recognize_results = cloud_speech.BatchRecognizeResults.from_json(
+                    results_bytes, ignore_unknown_fields=True
+                )
 
-    except Exception as ex:
-        logger.error("Process Batch Recognize results failed: %s", ex)
+                user_results_list = []
+                for result in batch_recognize_results.results:
+                    for alternative in result.alternatives:
+                        words = alternative.words
+                        if not words:
+                            user_results_list.append({
+                                "offset": 0.0,
+                                "duration": 0.0,
+                                "text": alternative.transcript
+                            })
+                        else:
+                            first_word = words[0]
+                            last_word = words[-1]
+                            start_seconds = first_word.start_offset.total_seconds()
+                            end_seconds = last_word.end_offset.total_seconds()
+                            offset_val = start_seconds
+                            duration_val = max(0.0, end_seconds - start_seconds)
+                            user_results_list.append({
+                                "offset": offset_val,
+                                "duration": duration_val,
+                                "text": alternative.transcript
+                            })
+                # Combine results for the same user
+                if original_user_id in final_results:
+                    final_results[original_user_id].extend(user_results_list)
+                else:
+                    final_results[original_user_id] = user_results_list
+
+        except Exception as ex:
+            logger.error("Batch %d: Process results failed: %s", batch_number + 1, ex)
+
+        # Add a small delay between batches
+        await asyncio.sleep(5)
 
     # Clean up temp files
     for flat_id, wav_path in wav_paths.items():
