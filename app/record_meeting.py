@@ -18,6 +18,7 @@ from discord.sinks import MP3Sink
 from app.stt_service.stt_select import select_stt_function
 from app.summary.agents.summary import generate_summary
 from app.summary.agents.todolist import generate_todolist
+from app.summary.agents.meeting_title import generate_meeting_title
 from app.utils.google_drive import upload_to_drive, upload_meeting_files
 from app.utils.retry import async_retry
 
@@ -293,6 +294,29 @@ async def record_meeting_audio(bot, voice_channel_id: int):
 
         meeting_transcript, timeline_path = await generate_timeline()
 
+        # Generate meeting title
+        meeting_start_time = datetime.fromtimestamp(local_info.get("start_time", time.time()))
+        meeting_title = await async_retry(
+            generate_meeting_title,
+            meeting_transcript,
+            meeting_start_time,
+            max_attempts=3,
+            delay=2.0
+        )
+        
+        if not meeting_title:
+            meeting_title = f"Meeting_{meeting_start_time.strftime('%Y%m%d_%H%M%S')}"
+        
+        # Update forum thread title if exists
+        thread_id = local_info.get("forum_thread_id")
+        if thread_id and bot.meeting_forum_thread_info.get(thread_id):
+            try:
+                thread = bot.meeting_forum_thread_info[thread_id]
+                await thread.edit(name=meeting_title)
+                logger.info("Updated forum thread title to: %s", meeting_title)
+            except Exception as e:
+                logger.error("Failed to update forum thread title: %s", e)
+
         # Save meeting transcript
         async def save_transcript():
             transcript_path = os.path.join(output_folder, "transcript.txt")
@@ -371,26 +395,21 @@ async def record_meeting_audio(bot, voice_channel_id: int):
                     else:
                         user_names[user_id] = str(user_id)
                 
-                # Create meeting folder name with timestamp
-                meeting_time = datetime.fromtimestamp(
-                    local_info.get("start_time", time.time())
-                ).strftime("%Y%m%d_%H%M%S")
-                folder_name = f"Meeting_{meeting_time}"
-                
-                # Upload all files
+                # Upload all files with cleanup
                 success = await async_retry(
                     upload_meeting_files,
-                    folder_name,
+                    meeting_title,  # Use generated title as folder name
                     file_paths,
-                    exported_files,  # Dictionary of user_id to audio file paths
+                    exported_files,
                     user_names,
                     drive_folder_id,
+                    output_folder,  # Pass local folder for cleanup
                     max_attempts=3,
                     delay=2.0
                 )
                 
                 if success:
-                    logger.info("Successfully uploaded all meeting files to Google Drive folder: %s", folder_name)
+                    logger.info("Successfully uploaded all meeting files to Google Drive folder: %s", meeting_title)
                 else:
                     logger.error("Failed to upload meeting files to Google Drive after all retries")
                     

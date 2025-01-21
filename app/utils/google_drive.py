@@ -3,6 +3,7 @@
 Google Drive utility functions for uploading files.
 """
 import os
+import shutil
 import logging
 from typing import Optional, Dict, List
 from google.oauth2 import service_account
@@ -106,7 +107,8 @@ async def upload_meeting_files(
     file_paths: Dict[str, str],
     audio_files: Dict[int, List[str]],
     user_names: Dict[int, str],
-    parent_folder_id: Optional[str] = None
+    parent_folder_id: Optional[str] = None,
+    local_folder: Optional[str] = None
 ) -> bool:
     """
     Upload all meeting files to a new folder in Google Drive.
@@ -117,6 +119,7 @@ async def upload_meeting_files(
         audio_files (Dict[int, List[str]]): Dictionary of user ID to list of audio file paths
         user_names (Dict[int, str]): Dictionary of user ID to user name mappings
         parent_folder_id (Optional[str]): Parent folder ID in Google Drive
+        local_folder (Optional[str]): Path to local folder to clean up after successful upload
         
     Returns:
         bool: True if all uploads successful, False otherwise
@@ -127,10 +130,15 @@ async def upload_meeting_files(
         if not folder_id:
             return False
             
+        upload_success = True
+            
         # Upload regular files
         for file_type, file_path in file_paths.items():
             if os.path.exists(file_path):
-                await upload_to_drive(file_path, folder_id, f"{file_type}.txt")
+                result = await upload_to_drive(file_path, folder_id, f"{file_type}.txt")
+                if not result:
+                    upload_success = False
+                    logger.error("Failed to upload %s file", file_type)
                 
         # Upload audio files with user names
         for user_id, audio_paths in audio_files.items():
@@ -141,13 +149,27 @@ async def upload_meeting_files(
                         user_name = user_names.get(user_id, str(user_id))
                         # If there's only one file, don't add part number
                         file_name = f"{user_name}.mp3" if len(audio_paths) == 1 else f"{user_name}_part{i+1}.mp3"
-                        await upload_to_drive(audio_path, folder_id, file_name)
+                        result = await upload_to_drive(audio_path, folder_id, file_name)
+                        if not result:
+                            upload_success = False
+                            logger.error("Failed to upload audio file for user %s", user_name)
             elif isinstance(audio_paths, str) and os.path.exists(audio_paths):
                 # Handle single audio file
                 user_name = user_names.get(user_id, str(user_id))
-                await upload_to_drive(audio_paths, folder_id, f"{user_name}.mp3")
+                result = await upload_to_drive(audio_paths, folder_id, f"{user_name}.mp3")
+                if not result:
+                    upload_success = False
+                    logger.error("Failed to upload audio file for user %s", user_name)
+        
+        # Clean up local folder if upload was successful
+        if upload_success and local_folder and os.path.exists(local_folder):
+            try:
+                shutil.rmtree(local_folder)
+                logger.info("Successfully cleaned up local folder: %s", local_folder)
+            except Exception as e:
+                logger.error("Failed to clean up local folder %s: %s", local_folder, e)
                 
-        return True
+        return upload_success
         
     except Exception as e:
         logger.error("Failed to upload meeting files: %s", e)
