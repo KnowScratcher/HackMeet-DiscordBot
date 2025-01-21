@@ -52,7 +52,7 @@ async def create_drive_folder(folder_name: str, parent_folder_id: Optional[str] 
             'parents': [parent_folder_id] if parent_folder_id else []
         }
         
-        async def _create_folder():
+        def _create_folder():
             return service.files().create(
                 body=file_metadata,
                 fields='id'
@@ -90,7 +90,7 @@ async def upload_to_drive(
             'parents': [folder_id] if folder_id else []
         }
         
-        async def _upload_file():
+        def _upload_file():
             media = MediaFileUpload(
                 file_path,
                 resumable=True,
@@ -153,7 +153,7 @@ async def upload_meeting_files(
         # Prepare regular file upload tasks
         for file_type, file_path in file_paths.items():
             if os.path.exists(file_path):
-                task = upload_to_drive(file_path, folder_id, f"{file_type}.txt")
+                task = asyncio.create_task(upload_to_drive(file_path, folder_id, f"{file_type}.txt"))
                 upload_tasks.append(task)
                 
         # Prepare audio file upload tasks
@@ -164,12 +164,12 @@ async def upload_meeting_files(
                     if os.path.exists(audio_path):
                         user_name = user_names.get(user_id, str(user_id))
                         file_name = f"{user_name}.mp3" if len(audio_paths) == 1 else f"{user_name}_part{i+1}.mp3"
-                        task = upload_to_drive(audio_path, folder_id, file_name)
+                        task = asyncio.create_task(upload_to_drive(audio_path, folder_id, file_name))
                         upload_tasks.append(task)
             elif isinstance(audio_paths, str) and os.path.exists(audio_paths):
                 # Handle single audio file
                 user_name = user_names.get(user_id, str(user_id))
-                task = upload_to_drive(audio_paths, folder_id, f"{user_name}.mp3")
+                task = asyncio.create_task(upload_to_drive(audio_paths, folder_id, f"{user_name}.mp3"))
                 upload_tasks.append(task)
         
         # Execute all upload tasks concurrently
