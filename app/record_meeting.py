@@ -18,7 +18,7 @@ from discord.sinks import MP3Sink
 from app.stt_service.stt_select import select_stt_function
 from app.summary.agents.summary import generate_summary
 from app.summary.agents.todolist import generate_todolist
-from app.utils.google_drive import upload_to_drive
+from app.utils.google_drive import upload_to_drive, upload_meeting_files
 from app.utils.retry import async_retry
 
 logger = logging.getLogger(__name__)
@@ -352,27 +352,50 @@ async def record_meeting_audio(bot, voice_channel_id: int):
         # Upload files to Google Drive if configured
         drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         if drive_folder_id:
-            files_to_upload = [
-                (transcript_path, "transcript"),
-                (summary_path, "summary"),
-                (todolist_path, "todolist"),
-                (metadata_path, "metadata"),
-                (timeline_path, "timeline")
-            ]
-            
-            for file_path, file_type in files_to_upload:
-                if os.path.exists(file_path):
-                    result = await async_retry(
-                        upload_to_drive,
-                        file_path,
-                        drive_folder_id,
-                        max_attempts=3,
-                        delay=2.0
-                    )
-                    if result:
-                        logger.info("Successfully uploaded %s to Google Drive", file_type)
+            try:
+                # Prepare file paths
+                file_paths = {
+                    "transcript": transcript_path,
+                    "summary": summary_path,
+                    "todolist": todolist_path,
+                    "metadata": metadata_path,
+                    "timeline": timeline_path
+                }
+                
+                # Get user names
+                user_names = {}
+                for user_id in exported_files.keys():
+                    if guild_local:
+                        member = guild_local.get_member(user_id)
+                        user_names[user_id] = member.display_name if member else str(user_id)
                     else:
-                        logger.error("Failed to upload %s to Google Drive after all retries", file_type)
+                        user_names[user_id] = str(user_id)
+                
+                # Create meeting folder name with timestamp
+                meeting_time = datetime.fromtimestamp(
+                    local_info.get("start_time", time.time())
+                ).strftime("%Y%m%d_%H%M%S")
+                folder_name = f"Meeting_{meeting_time}"
+                
+                # Upload all files
+                success = await async_retry(
+                    upload_meeting_files,
+                    folder_name,
+                    file_paths,
+                    exported_files,  # Dictionary of user_id to audio file paths
+                    user_names,
+                    drive_folder_id,
+                    max_attempts=3,
+                    delay=2.0
+                )
+                
+                if success:
+                    logger.info("Successfully uploaded all meeting files to Google Drive folder: %s", folder_name)
+                else:
+                    logger.error("Failed to upload meeting files to Google Drive after all retries")
+                    
+            except Exception as e:
+                logger.error("Error during Google Drive upload: %s", e)
 
         # Update local info
         local_info.update({
