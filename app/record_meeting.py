@@ -9,6 +9,7 @@ import logging
 import subprocess
 import tempfile
 import time
+import shutil
 from datetime import datetime
 from typing import List, Dict, Any
 
@@ -296,16 +297,23 @@ async def record_meeting_audio(bot, voice_channel_id: int):
 
         # Generate meeting title
         meeting_start_time = datetime.fromtimestamp(local_info.get("start_time", time.time()))
-        meeting_title = await async_retry(
-            generate_meeting_title,
-            meeting_transcript,
-            meeting_start_time,
-            max_attempts=3,
-            delay=10.0
-        )
         
-        if not meeting_title:
-            meeting_title = f"Meeting_{meeting_start_time.strftime('%Y%m%d_%H%M%S')}"
+        # Check if there is a valid transcript
+        has_transcript = bool(meeting_transcript and meeting_transcript.strip() and 
+                            meeting_transcript != os.getenv("NO_TRANSCRIPT_MESSAGE", "No transcript available."))
+        
+        if has_transcript:
+            meeting_title = await async_retry(
+                generate_meeting_title,
+                meeting_transcript,
+                meeting_start_time,
+                max_attempts=3,
+                delay=10.0
+            )
+            if not meeting_title:
+                meeting_title = f"[{meeting_start_time.strftime('%Y%m%d%H%M%S')}] " + os.getenv("NO_MEETING_TITLE_MESSAGE", "Meeting")
+        else:
+            meeting_title = f"[{meeting_start_time.strftime('%Y%m%d%H%M%S')}] " + os.getenv("NO_MEETING_TITLE_MESSAGE", "Meeting")
         
         # Update forum thread title if exists
         thread_id = local_info.get("forum_thread_id")
@@ -378,13 +386,21 @@ async def record_meeting_audio(bot, voice_channel_id: int):
         if drive_folder_id:
             try:
                 # Prepare file paths
-                file_paths = {
-                    "transcript": transcript_path,
-                    "summary": summary_path,
-                    "todolist": todolist_path,
-                    "metadata": metadata_path,
-                    "timeline": timeline_path
-                }
+                file_paths = {}
+                
+                # Only include files that exist and have content
+                if has_transcript:
+                    file_paths.update({
+                        "transcript": transcript_path,
+                        "summary": summary_path,
+                        "todolist": todolist_path,
+                    })
+                
+                # Always include metadata and timeline if they exist
+                if os.path.exists(metadata_path):
+                    file_paths["metadata"] = metadata_path
+                if os.path.exists(timeline_path):
+                    file_paths["timeline"] = timeline_path
                 
                 # Get user names
                 user_names = {}
@@ -398,7 +414,7 @@ async def record_meeting_audio(bot, voice_channel_id: int):
                 # Upload all files with cleanup
                 success = await async_retry(
                     upload_meeting_files,
-                    meeting_title,  # Use generated title as folder name
+                    meeting_title,
                     file_paths,
                     exported_files,
                     user_names,
@@ -410,6 +426,14 @@ async def record_meeting_audio(bot, voice_channel_id: int):
                 
                 if success:
                     logger.info("Successfully uploaded all meeting files to Google Drive folder: %s", meeting_title)
+                    
+                    # Clean up local files after successful upload
+                    try:
+                        if os.path.exists(output_folder):
+                            await asyncio.to_thread(shutil.rmtree, output_folder)
+                            logger.info("Successfully cleaned up local folder: %s", output_folder)
+                    except Exception as e:
+                        logger.error("Failed to clean up local folder %s: %s", output_folder, e)
                 else:
                     logger.error("Failed to upload meeting files to Google Drive after all retries")
                     
