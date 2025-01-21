@@ -9,12 +9,13 @@ from typing import Optional, Dict, List
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+import asyncio
 
 logger = logging.getLogger(__name__)
 
-def get_drive_service():
+async def get_drive_service():
     """
-    Initialize Google Drive service with service account credentials.
+    Initialize Google Drive service with service account credentials asynchronously.
     
     Returns:
         google.discovery.Resource: Google Drive service instance
@@ -23,16 +24,18 @@ def get_drive_service():
     if not credentials_path:
         raise ValueError("GOOGLE_DRIVE_CREDENTIALS environment variable not set")
     
-    credentials = service_account.Credentials.from_service_account_file(
-        credentials_path,
-        scopes=['https://www.googleapis.com/auth/drive.file']
-    )
+    def _create_service():
+        credentials = service_account.Credentials.from_service_account_file(
+            credentials_path,
+            scopes=['https://www.googleapis.com/auth/drive.file']
+        )
+        return build('drive', 'v3', credentials=credentials)
     
-    return build('drive', 'v3', credentials=credentials)
+    return await asyncio.to_thread(_create_service)
 
 async def create_drive_folder(folder_name: str, parent_folder_id: Optional[str] = None) -> Optional[str]:
     """
-    Create a new folder in Google Drive.
+    Create a new folder in Google Drive asynchronously.
     
     Args:
         folder_name (str): Name of the folder to create
@@ -42,17 +45,20 @@ async def create_drive_folder(folder_name: str, parent_folder_id: Optional[str] 
         Optional[str]: Folder ID if creation successful, None otherwise
     """
     try:
-        service = get_drive_service()
+        service = await get_drive_service()
         file_metadata = {
             'name': folder_name,
             'mimeType': 'application/vnd.google-apps.folder',
             'parents': [parent_folder_id] if parent_folder_id else []
         }
         
-        folder = service.files().create(
-            body=file_metadata,
-            fields='id'
-        ).execute()
+        async def _create_folder():
+            return service.files().create(
+                body=file_metadata,
+                fields='id'
+            ).execute()
+        
+        folder = await asyncio.to_thread(_create_folder)
         
         logger.info("Created folder '%s' in Google Drive. Folder ID: %s", folder_name, folder.get('id'))
         return folder.get('id')
@@ -67,7 +73,7 @@ async def upload_to_drive(
     custom_name: Optional[str] = None
 ) -> Optional[str]:
     """
-    Upload a file to Google Drive.
+    Upload a file to Google Drive asynchronously.
     
     Args:
         file_path (str): Path to the file to upload
@@ -78,22 +84,33 @@ async def upload_to_drive(
         Optional[str]: File ID if upload successful, None otherwise
     """
     try:
-        service = get_drive_service()
+        service = await get_drive_service()
         file_metadata = {
             'name': custom_name or os.path.basename(file_path),
             'parents': [folder_id] if folder_id else []
         }
         
-        media = MediaFileUpload(
-            file_path,
-            resumable=True
-        )
+        async def _upload_file():
+            media = MediaFileUpload(
+                file_path,
+                resumable=True,
+                chunksize=1024*1024  # 1MB chunks for better performance
+            )
+            
+            request = service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id'
+            )
+            
+            response = None
+            while response is None:
+                status, response = request.next_chunk()
+                if status:
+                    logger.debug("Uploaded %d%%.", int(status.progress() * 100))
+            return response
         
-        file = service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id'
-        ).execute()
+        file = await asyncio.to_thread(_upload_file)
         
         logger.info("File uploaded successfully to Google Drive. File ID: %s", file.get('id'))
         return file.get('id')
@@ -111,7 +128,7 @@ async def upload_meeting_files(
     local_folder: Optional[str] = None
 ) -> bool:
     """
-    Upload all meeting files to a new folder in Google Drive.
+    Upload all meeting files to a new folder in Google Drive asynchronously.
     
     Args:
         meeting_folder_name (str): Name for the meeting folder
@@ -131,40 +148,43 @@ async def upload_meeting_files(
             return False
             
         upload_success = True
+        upload_tasks = []
             
-        # Upload regular files
+        # Prepare regular file upload tasks
         for file_type, file_path in file_paths.items():
             if os.path.exists(file_path):
-                result = await upload_to_drive(file_path, folder_id, f"{file_type}.txt")
-                if not result:
-                    upload_success = False
-                    logger.error("Failed to upload %s file", file_type)
+                task = upload_to_drive(file_path, folder_id, f"{file_type}.txt")
+                upload_tasks.append(task)
                 
-        # Upload audio files with user names
+        # Prepare audio file upload tasks
         for user_id, audio_paths in audio_files.items():
             if isinstance(audio_paths, list):
                 # Handle multiple audio files for one user
                 for i, audio_path in enumerate(audio_paths):
                     if os.path.exists(audio_path):
                         user_name = user_names.get(user_id, str(user_id))
-                        # If there's only one file, don't add part number
                         file_name = f"{user_name}.mp3" if len(audio_paths) == 1 else f"{user_name}_part{i+1}.mp3"
-                        result = await upload_to_drive(audio_path, folder_id, file_name)
-                        if not result:
-                            upload_success = False
-                            logger.error("Failed to upload audio file for user %s", user_name)
+                        task = upload_to_drive(audio_path, folder_id, file_name)
+                        upload_tasks.append(task)
             elif isinstance(audio_paths, str) and os.path.exists(audio_paths):
                 # Handle single audio file
                 user_name = user_names.get(user_id, str(user_id))
-                result = await upload_to_drive(audio_paths, folder_id, f"{user_name}.mp3")
-                if not result:
-                    upload_success = False
-                    logger.error("Failed to upload audio file for user %s", user_name)
+                task = upload_to_drive(audio_paths, folder_id, f"{user_name}.mp3")
+                upload_tasks.append(task)
+        
+        # Execute all upload tasks concurrently
+        results = await asyncio.gather(*upload_tasks, return_exceptions=True)
+        
+        # Check results
+        for result in results:
+            if isinstance(result, Exception) or result is None:
+                upload_success = False
+                logger.error("One or more files failed to upload: %s", result)
         
         # Clean up local folder if upload was successful
         if upload_success and local_folder and os.path.exists(local_folder):
             try:
-                shutil.rmtree(local_folder)
+                await asyncio.to_thread(shutil.rmtree, local_folder)
                 logger.info("Successfully cleaned up local folder: %s", local_folder)
             except Exception as e:
                 logger.error("Failed to clean up local folder %s: %s", local_folder, e)
