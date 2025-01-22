@@ -194,7 +194,8 @@ async def google_stt_with_timeline_batch(audio_file_dict: Dict[str, List[str]]) 
                             user_results_list.append({
                                 "offset": 0.0,
                                 "duration": 0.0,
-                                "text": alternative.transcript
+                                "text": alternative.transcript,
+                                "file_path": input_uri
                             })
                         else:
                             first_word = words[0]
@@ -206,7 +207,8 @@ async def google_stt_with_timeline_batch(audio_file_dict: Dict[str, List[str]]) 
                             user_results_list.append({
                                 "offset": offset_val,
                                 "duration": duration_val,
-                                "text": alternative.transcript
+                                "text": alternative.transcript,
+                                "file_path": input_uri
                             })
                 # Combine results for the same user
                 if original_user_id in final_results:

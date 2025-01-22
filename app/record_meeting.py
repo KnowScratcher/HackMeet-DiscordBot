@@ -334,15 +334,36 @@ async def record_meeting_audio(bot, voice_channel_id: int):
                     else:
                         user_name = str(user_id)
 
+                    # Get user's join time
+                    user_join_time = local_info.get("user_join_time", {}).get(user_id)
+                    if not user_join_time:
+                        user_join_time = local_info.get("start_time", time.time())
+
+                    # Extract part number and calculate time offset
                     for segment in segments:
                         # Skip empty segments
                         if not segment["text"].strip():
                             continue
+
+                        # Calculate the actual time offset
+                        segment_offset = segment["offset"]
+                        # Check if this is from a split file
+                        file_path = segment.get("file_path", "")
+                        if file_path:
+                            # Extract part number from file name (e.g., user_id_part_001.mp3)
+                            import re
+                            match = re.search(r'_part_(\d+)\.', file_path)
+                            if match:
+                                part_num = int(match.group(1))
+                                # Add the offset for previous parts (3600 seconds per part)
+                                segment_offset += part_num * 3600
+
                         absolute_time = datetime.fromtimestamp(
-                            local_info.get("start_time", time.time()) + segment["offset"]
+                            user_join_time + segment_offset
                         ).strftime("%Y-%m-%d %H:%M:%S")
                         timeline_segments.append((absolute_time, user_name, segment["text"]))
-                        logger.debug("Added segment: [%s] %s: %s", absolute_time, user_name, segment["text"])
+                        logger.debug("Added segment: [%s] %s: %s (offset: %f)", 
+                                   absolute_time, user_name, segment["text"], segment_offset)
 
                 # Sort segments by time
                 timeline_segments.sort(key=lambda x: x[0])
