@@ -181,27 +181,105 @@ async def record_meeting_audio(bot, voice_channel_id: int):
 
         # Export all user audio data
         async def export_with_retry(user_id: int, recorded_audio: Any) -> List[str]:
-            result = await async_retry(
-                export_audio_async,
-                user_id, recorded_audio, output_folder,
-                max_attempts=5,
-                delay=10.0
-            )
-            if result is None:
-                logger.error("Failed to export audio for user %s after all retries", user_id)
-            return result or []
+            try:
+                # Get user's actual recording time range
+                user_join_time = local_info.get("user_join_time", {}).get(user_id)
+                user_leave_time = local_info.get("user_leave_time", {}).get(user_id, time.time())
+                
+                if not user_join_time:
+                    logger.warning("No join time found for user %s, using meeting start time", user_id)
+                    user_join_time = local_info.get("start_time", time.time())
+                
+                # Calculate actual recording duration (seconds)
+                actual_duration = user_leave_time - user_join_time
+                
+                # Check recording data
+                try:
+                    # Check AudioData object content
+                    if hasattr(recorded_audio, 'file'):
+                        # Save current position
+                        current_pos = recorded_audio.file.tell()
+                        # Move to end to get size
+                        recorded_audio.file.seek(0, 2)
+                        audio_size = recorded_audio.file.tell()
+                        # Restore original position
+                        recorded_audio.file.seek(current_pos)
+                        
+                        logger.info("Audio data for user %s: size=%d bytes", user_id, audio_size)
+                        if audio_size > 0:
+                            logger.info("User %s has valid audio data", user_id)
+                        else:
+                            logger.warning("Audio data for user %s is empty", user_id)
+                    else:
+                        logger.error("Invalid audio data format for user %s: %s", user_id, type(recorded_audio))
+                except Exception as e:
+                    logger.error("Error checking audio data for user %s: %s", user_id, e)
+                
+                # Try to export audio regardless, let FFmpeg handle the actual audio data
+                result = await async_retry(
+                    export_audio_async,
+                    user_id, recorded_audio, output_folder,
+                    max_attempts=5,
+                    delay=10.0
+                )
+                
+                if result:
+                    logger.info("Successfully exported audio for user %s: %s", user_id, result)
+                    return result
+                else:
+                    logger.error("Failed to export audio for user %s", user_id)
+                    return []
+                    
+            except Exception as e:
+                logger.error("Error processing audio for user %s: %s", user_id, e)
+                return []
 
-        export_tasks = {
-            user_id: export_with_retry(user_id, recorded_audio)
-            for user_id, recorded_audio in sink.audio_data.items()
-        }
+        # Create export tasks, ensure all valid recordings are included
+        export_tasks = {}
+        for user_id, recorded_audio in sink.audio_data.items():
+            logger.info("Processing audio data for user %s", user_id)
+            # Check if recording data is valid
+            try:
+                has_audio = bool(recorded_audio and hasattr(recorded_audio, 'file') and recorded_audio.file)
+                if has_audio:
+                    # Get BytesIO object size
+                    try:
+                        # Save current position
+                        current_pos = recorded_audio.file.tell()
+                        # Move to end to get size
+                        recorded_audio.file.seek(0, 2)
+                        audio_size = recorded_audio.file.tell()
+                        # Restore original position
+                        recorded_audio.file.seek(current_pos)
+                        
+                        logger.info("Valid audio data found for user %s with size %d bytes", user_id, audio_size)
+                        if audio_size > 0:  # If there is actual audio data
+                            export_tasks[user_id] = export_with_retry(user_id, recorded_audio)
+                            logger.info("Added export task for user %s with audio size %d bytes", user_id, audio_size)
+                        else:
+                            logger.warning("Audio data for user %s is empty (size=0)", user_id)
+                    except Exception as e:
+                        logger.error("Error getting audio size for user %s: %s", user_id, e)
+                        # If unable to get size, still try to process the audio
+                        export_tasks[user_id] = export_with_retry(user_id, recorded_audio)
+                        logger.info("Added export task for user %s (size unknown)", user_id)
+                else:
+                    logger.warning("Invalid or empty audio data for user %s", user_id)
+            except Exception as e:
+                logger.error("Error checking audio data for user %s: %s", user_id, e)
+
+        logger.info("Starting export tasks for %d users", len(export_tasks))
         export_results = await asyncio.gather(*export_tasks.values(), return_exceptions=True)
-
+        
+        success_count = 0
         for user_id, result in zip(export_tasks.keys(), export_results):
             if isinstance(result, Exception):
                 logger.error("Error exporting audio for user %s: %s", user_id, result)
             else:
                 exported_files[user_id] = result
+                success_count += 1
+        
+        logger.info("Successfully exported audio for %d/%d users", success_count, len(export_tasks))
 
         # Save meeting metadata
         async def save_metadata():
@@ -245,9 +323,10 @@ async def record_meeting_audio(bot, voice_channel_id: int):
         for user_id, stt_output in raw_stt_outputs.items():
             stt_results[user_id] = stt_output
 
-        # Combine segments for a timeline
+        # Generate timeline
         async def generate_timeline():
             try:
+                logger.info("Starting timeline generation with %d STT results", len(stt_results))
                 for user_id, segments in stt_results.items():
                     if guild_local:
                         member = guild_local.get_member(user_id)
@@ -263,9 +342,11 @@ async def record_meeting_audio(bot, voice_channel_id: int):
                             local_info.get("start_time", time.time()) + segment["offset"]
                         ).strftime("%Y-%m-%d %H:%M:%S")
                         timeline_segments.append((absolute_time, user_name, segment["text"]))
+                        logger.debug("Added segment: [%s] %s: %s", absolute_time, user_name, segment["text"])
 
                 # Sort segments by time
                 timeline_segments.sort(key=lambda x: x[0])
+                logger.info("Generated %d timeline segments", len(timeline_segments))
 
                 # Build the transcript
                 lines = []
@@ -274,6 +355,11 @@ async def record_meeting_audio(bot, voice_channel_id: int):
                         continue
                     lines.append(f"[{t}] <@{uid}>: {text}")
                 meeting_transcript = "\n".join(lines)
+                
+                if meeting_transcript.strip():
+                    logger.info("Generated transcript with %d lines", len(lines))
+                else:
+                    logger.warning("Generated transcript is empty")
 
                 # Save timeline segments
                 timeline_path = os.path.join(output_folder, "timeline.json")

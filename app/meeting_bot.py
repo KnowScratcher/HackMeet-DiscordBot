@@ -112,6 +112,8 @@ class MeetingBot(commands.Bot):
                         "summary_message_id": None,
                         "recording_task": None,
                         "user_join_time": {member.id: time.time()},
+                        "user_leave_time": {},
+                        "user_recording_status": {member.id: True},
                     }
                     if thread:
                         self.meeting_forum_thread_info[thread.id] = thread
@@ -130,6 +132,14 @@ class MeetingBot(commands.Bot):
                 info["all_participants"].add(member.id)
                 if member.id not in info["user_join_time"]:
                     info["user_join_time"][member.id] = time.time()
+                else:
+                    # If user rejoins, update their recording status
+                    current_time = time.time()
+                    if not info["user_recording_status"].get(member.id, False):
+                        info["user_join_time"][member.id] = current_time
+                        info["user_recording_status"][member.id] = True
+                        if member.id in info["user_leave_time"]:
+                            del info["user_leave_time"][member.id]
 
                 thread_id = info["forum_thread_id"]
                 if thread_id:
@@ -149,6 +159,8 @@ class MeetingBot(commands.Bot):
             info = self.meeting_voice_channel_info[before.channel.id]
             if member.id in info["active_participants"]:
                 info["active_participants"].remove(member.id)
+                info["user_leave_time"][member.id] = time.time()
+                info["user_recording_status"][member.id] = False
 
             thread_id = info.get("forum_thread_id")
             if thread_id:

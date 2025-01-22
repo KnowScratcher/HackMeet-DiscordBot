@@ -68,7 +68,7 @@ class MultiBotManager:
             logger.info("Checking if meeting %s already has a bot...", vc_id)
             already_has_bot = False
 
-            # 檢查是否有 Bot 已在錄製
+            # Check if any Bot is already recording
             for bot in self.bots:
                 vc_info = bot.meeting_voice_channel_info.get(vc_id)
                 if vc_info and vc_info.get("recording_task") is not None:
