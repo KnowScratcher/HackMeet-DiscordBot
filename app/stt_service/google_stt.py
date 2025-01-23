@@ -108,15 +108,15 @@ async def google_stt_with_timeline_batch(audio_file_dict: Dict[str, List[str]]) 
     final_results: Dict[str, List[Dict]] = {}
     BATCH_SIZE = 10  # Process 10 files at a time
 
-    # Process files in batches
-    for batch_number, batch_dict in enumerate(chunks(gcs_uri_dict, BATCH_SIZE)):
+    async def process_batch(batch_dict, batch_number):
+        """Process a single batch of files."""
         logger.info("Processing batch %d with %d files", batch_number + 1, len(batch_dict))
         batch_files = []
         for flat_id, gcs_uri in batch_dict.items():
             batch_files.append(cloud_speech.BatchRecognizeFileMetadata(uri=gcs_uri))
 
         if not batch_files:
-            continue
+            return {}
 
         output_gcs_uri = f"gs://{bucket_name}/transcripts/batch_results/"
         request = cloud_speech.BatchRecognizeRequest(
@@ -143,7 +143,7 @@ async def google_stt_with_timeline_batch(audio_file_dict: Dict[str, List[str]]) 
             logger.info("Batch %d: Recognize operation initiated...", batch_number + 1)
         except Exception as ex:
             logger.error("Batch %d: Recognize initiation failed: %s", batch_number + 1, ex)
-            continue
+            return {}
 
         response = None
         while response is None:
@@ -156,6 +156,7 @@ async def google_stt_with_timeline_batch(audio_file_dict: Dict[str, List[str]]) 
                 logger.warning("Batch %d: Recognize NOT ready yet: %s", batch_number + 1, ex)
                 await asyncio.sleep(30)
 
+        batch_results = {}
         try:
             for input_uri, file_result in response.results.items():
                 matched_flat_id = None
@@ -210,17 +211,69 @@ async def google_stt_with_timeline_batch(audio_file_dict: Dict[str, List[str]]) 
                                 "text": alternative.transcript,
                                 "file_path": input_uri
                             })
-                # Combine results for the same user
-                if original_user_id in final_results:
-                    final_results[original_user_id].extend(user_results_list)
+
+                if original_user_id in batch_results:
+                    batch_results[original_user_id].extend(user_results_list)
                 else:
-                    final_results[original_user_id] = user_results_list
+                    batch_results[original_user_id] = user_results_list
 
         except Exception as ex:
             logger.error("Batch %d: Process results failed: %s", batch_number + 1, ex)
+            return {}
 
-        # Add a small delay between batches
-        await asyncio.sleep(5)
+        return batch_results
+
+    # Try parallel batch processing first
+    try:
+        batch_tasks = []
+        for batch_number, batch_dict in enumerate(chunks(gcs_uri_dict, BATCH_SIZE)):
+            task = asyncio.create_task(process_batch(batch_dict, batch_number))
+            batch_tasks.append(task)
+
+        # Process all batches in parallel
+        batch_results_list = await asyncio.gather(*batch_tasks, return_exceptions=True)
+        
+        # Check if any batch failed
+        any_failed = False
+        for result in batch_results_list:
+            if isinstance(result, Exception) or not result:
+                any_failed = True
+                break
+
+        if any_failed:
+            logger.warning("Parallel batch processing failed, falling back to sequential processing")
+            # Fall back to sequential processing
+            for batch_number, batch_dict in enumerate(chunks(gcs_uri_dict, 1)):  # Process one file at a time
+                batch_results = await process_batch(batch_dict, batch_number)
+                # Merge results
+                for user_id, results in batch_results.items():
+                    if user_id in final_results:
+                        final_results[user_id].extend(results)
+                    else:
+                        final_results[user_id] = results
+                # Add a small delay between files
+                await asyncio.sleep(2)
+        else:
+            # Merge successful parallel batch results
+            for batch_results in batch_results_list:
+                for user_id, results in batch_results.items():
+                    if user_id in final_results:
+                        final_results[user_id].extend(results)
+                    else:
+                        final_results[user_id] = results
+
+    except Exception as e:
+        logger.error("Error during batch processing: %s", e)
+        # Fall back to sequential processing
+        for batch_number, batch_dict in enumerate(chunks(gcs_uri_dict, 1)):
+            batch_results = await process_batch(batch_dict, batch_number)
+            # Merge results
+            for user_id, results in batch_results.items():
+                if user_id in final_results:
+                    final_results[user_id].extend(results)
+                else:
+                    final_results[user_id] = results
+            await asyncio.sleep(2)
 
     # Clean up temp files
     for flat_id, wav_path in wav_paths.items():
