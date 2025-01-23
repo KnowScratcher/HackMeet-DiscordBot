@@ -1,7 +1,5 @@
 # 🚀 HackMeet-DiscordBot
 
-![badge for project](https://wakapi.xiaobo.app/api/badge/%e5%b0%8f%e6%b3%a2/interval:any/project:HackMeet-DiscordBot)
-
 ### 🌐 Description
 This is a Discord meeting recording bot that feels nothing short of magical! ✨
 
