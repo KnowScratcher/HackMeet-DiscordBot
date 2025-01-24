@@ -67,7 +67,7 @@ class MeetingBot(commands.Bot):
                 try:
                     overwrites = {
                         member.guild.default_role: discord.PermissionOverwrite(
-                            connect=True, speak=True
+                            connect=False, speak=True
                         )
                     }
 
