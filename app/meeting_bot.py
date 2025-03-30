@@ -65,11 +65,33 @@ class MeetingBot(commands.Bot):
                 category = after.channel.category
                 new_channel_name = generate_meeting_room_name()
                 try:
+                    # Get allowed role IDs from environment variable
+                    allowed_role_ids_str = os.getenv("ALLOWED_ROLE_IDS", "")
+                    allowed_role_ids = [int(role_id.strip()) for role_id in allowed_role_ids_str.split(",") if role_id.strip()]
+
+                    # Set default permissions (everyone can view but not connect)
                     overwrites = {
                         member.guild.default_role: discord.PermissionOverwrite(
-                            connect=False, speak=True
+                            view_channel=True,  # Everyone can see the channel
+                            connect=False,      # But cannot connect by default
+                            speak=False         # And cannot speak by default
                         )
                     }
+
+                    # Add permissions for allowed roles
+                    for role_id in allowed_role_ids:
+                        role = member.guild.get_role(role_id)
+                        if role:
+                            overwrites[role] = discord.PermissionOverwrite(
+                                connect=True,
+                                speak=True
+                            )
+
+                    # Always allow the meeting creator to join
+                    overwrites[member] = discord.PermissionOverwrite(
+                        connect=True,
+                        speak=True
+                    )
 
                     # Create a new voice channel
                     meeting_channel = await category.create_voice_channel(

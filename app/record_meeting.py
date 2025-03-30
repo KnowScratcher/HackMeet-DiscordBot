@@ -20,7 +20,7 @@ from app.stt_service.stt_select import select_stt_function
 from app.summary.agents.summary import generate_summary
 from app.summary.agents.todolist import generate_todolist
 from app.summary.agents.meeting_title import generate_meeting_title
-from app.utils.google_drive import upload_to_drive, upload_meeting_files
+from app.utils.oauth_drive import upload_meeting_files, reset_drive_service
 from app.utils.retry import async_retry
 
 logger = logging.getLogger(__name__)
@@ -518,6 +518,10 @@ async def record_meeting_audio(bot, voice_channel_id: int):
                     else:
                         user_names[user_id] = str(user_id)
                 
+                # Create a backup folder for local files in case upload fails
+                backup_folder = f"backup_{output_folder}"
+                os.makedirs(backup_folder, exist_ok=True)
+                
                 # Upload all files with cleanup
                 success = await async_retry(
                     upload_meeting_files,
@@ -526,9 +530,10 @@ async def record_meeting_audio(bot, voice_channel_id: int):
                     exported_files,
                     user_names,
                     drive_folder_id,
-                    output_folder,  # Pass local folder for cleanup
+                    None,  # Don't pass output_folder for cleanup yet
                     max_attempts=6,
-                    delay=20.0
+                    delay=20.0,
+                    exceptions=(Exception,)
                 )
                 
                 if success:
@@ -539,13 +544,48 @@ async def record_meeting_audio(bot, voice_channel_id: int):
                         if os.path.exists(output_folder):
                             await asyncio.to_thread(shutil.rmtree, output_folder)
                             logger.info("Successfully cleaned up local folder: %s", output_folder)
+                        if os.path.exists(backup_folder):
+                            await asyncio.to_thread(shutil.rmtree, backup_folder)
                     except Exception as e:
                         logger.error("Failed to clean up local folder %s: %s", output_folder, e)
                 else:
                     logger.error("Failed to upload meeting files to Google Drive after all retries")
                     
+                    # Preserve local files by moving them to backup folder
+                    try:
+                        # Copy important files to backup folder
+                        for file_type, file_path in file_paths.items():
+                            if os.path.exists(file_path):
+                                backup_path = os.path.join(backup_folder, os.path.basename(file_path))
+                                await asyncio.to_thread(shutil.copy2, file_path, backup_path)
+                        
+                        # Copy audio files to backup folder
+                        for user_id, audio_paths in exported_files.items():
+                            if isinstance(audio_paths, list):
+                                for audio_path in audio_paths:
+                                    if os.path.exists(audio_path):
+                                        backup_path = os.path.join(backup_folder, os.path.basename(audio_path))
+                                        await asyncio.to_thread(shutil.copy2, audio_path, backup_path)
+                            elif isinstance(audio_paths, str) and os.path.exists(audio_paths):
+                                backup_path = os.path.join(backup_folder, os.path.basename(audio_paths))
+                                await asyncio.to_thread(shutil.copy2, audio_paths, backup_path)
+                        
+                        logger.info("Preserved meeting files in backup folder: %s", backup_folder)
+                        
+                        # Clean up original folder
+                        if os.path.exists(output_folder):
+                            await asyncio.to_thread(shutil.rmtree, output_folder)
+                    except Exception as e:
+                        logger.error("Failed to preserve meeting files: %s", e)
             except Exception as e:
                 logger.error("Error during Google Drive upload: %s", e)
+                
+                # Force Google Drive service reset on serious errors
+                try:
+                    await reset_drive_service()
+                    logger.info("Reset Google Drive service after upload error")
+                except Exception as reset_error:
+                    logger.error("Failed to reset Google Drive service: %s", reset_error)
 
         # Update local info
         local_info.update({
