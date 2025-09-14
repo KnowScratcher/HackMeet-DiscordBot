@@ -1,7 +1,7 @@
 
 .idea/
 
-*.txt
+*(!requirements.txt).txt
 
 *.pyc
 

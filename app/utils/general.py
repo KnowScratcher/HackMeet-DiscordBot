@@ -22,4 +22,4 @@ async def _convert_to_wav(src_path: str, dst_path: str) -> None:
 def generate_meeting_room_name() -> str:
     """Generates a name for a meeting room based on the current time."""
     current_time = datetime.now().strftime("%H%M%S")
-    return f"{os.getenv("DISCORD_MEETING_ROOM_NAME")}-{current_time}"
+    return f"{os.getenv('DISCORD_MEETING_ROOM_NAME')}-{current_time}"
